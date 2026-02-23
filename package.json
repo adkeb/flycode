@@ -1,0 +1,23 @@
+{
+  "name": "flycode",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces --if-present",
+    "build:extension": "npm run build -w @flycode/extension",
+    "build:extension:windows": "npm run build:extension && npm run sync:extension:windows",
+    "dev:service": "npm run dev -w @flycode/local-service",
+    "sync:extension:windows": "bash ./scripts/sync-extension-to-windows.sh",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.301",
+    "@types/node": "^22.13.9",
+    "typescript": "^5.8.2",
+    "vitest": "^2.1.9"
+  }
+}

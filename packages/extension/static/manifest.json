@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "FlyCode Local Bridge",
+  "version": "0.1.0",
+  "description": "Bridge local files into Qwen/DeepSeek web chats with policy controls.",
+  "permissions": ["storage", "scripting", "tabs"],
+  "host_permissions": [
+    "*://chat.qwen.ai/*",
+    "*://www.deepseek.com/*",
+    "*://chat.deepseek.com/*",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://chat.qwen.ai/*",
+        "*://www.deepseek.com/*",
+        "*://chat.deepseek.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "web_accessible_resources": [
+    {
+      "resources": ["confirm.html", "confirm.js", "confirm.js.map"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "action": {
+    "default_title": "FlyCode"
+  }
+}

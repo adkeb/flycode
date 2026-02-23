@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>FlyCode 设置</title>
+    <style>
+      body { font-family: sans-serif; max-width: 720px; margin: 20px auto; line-height: 1.5; }
+      .row { margin-bottom: 12px; }
+      label { display: block; font-weight: 600; }
+      input, textarea { width: 100%; padding: 8px; box-sizing: border-box; }
+      button { padding: 8px 12px; margin-right: 8px; }
+      .hint { color: #555; font-size: 13px; }
+      .status { margin-top: 12px; min-height: 20px; }
+    </style>
+  </head>
+  <body>
+    <h1>FlyCode 扩展设置</h1>
+    <div class="row">
+      <label for="baseUrl">本地服务地址</label>
+      <input id="baseUrl" placeholder="http://127.0.0.1:39393" />
+    </div>
+    <div class="row">
+      <label for="token">Bearer Token</label>
+      <input id="token" placeholder="配对后自动写入 Token" />
+    </div>
+    <div class="row">
+      <label for="pairCode">配对码</label>
+      <input id="pairCode" placeholder="输入本地服务显示的 6 位配对码" />
+      <p class="hint">配对码一次性使用，可自动换取并保存 Token。</p>
+    </div>
+    <div class="row">
+      <label for="maxInjectTokens">注入 Token 上限</label>
+      <input id="maxInjectTokens" type="number" min="200" max="200000" />
+    </div>
+    <div class="row">
+      <label>
+        <input id="confirmWritesEnabled" type="checkbox" />
+        启用写入二次确认弹窗（默认）
+      </label>
+    </div>
+    <hr />
+    <h2>自动工具模式</h2>
+    <div class="row">
+      <label>
+        <input id="autoToolEnabled" type="checkbox" />
+        启用自动工具模式（监听 AI 的 `flycode-call` 代码块）
+      </label>
+      <p class="hint">开启后，扩展会扫描 AI 回复并自动执行识别到的本地文件命令。</p>
+    </div>
+    <div class="row">
+      <label>
+        <input id="autoToolAutoSend" type="checkbox" />
+        自动发送工具结果到聊天
+      </label>
+      <p class="hint">关闭后只注入输入框，需要你手动发送。</p>
+    </div>
+    <div class="row">
+      <label>
+        <input id="autoToolAllowWrite" type="checkbox" />
+        允许自动模式执行 `/fs.write`
+      </label>
+      <p class="hint">已默认开启。关闭后自动模式将阻止写入与批量写入。</p>
+    </div>
+    <div class="row">
+      <label>
+        <input id="compactResultDisplayEnabled" type="checkbox" />
+        精简显示 flycode-result（仅显示成功/失败）
+      </label>
+      <p class="hint">AI 仍会接收完整内容，此项只改变页面可视化展示。</p>
+    </div>
+    <div class="row">
+      <label for="autoToolMaxCallsPerTurn">每轮自动调用上限</label>
+      <input id="autoToolMaxCallsPerTurn" type="number" min="1" max="20" />
+      <p class="hint">限制模型持续请求工具导致的循环调用。</p>
+    </div>
+    <div class="row">
+      <label>
+        <input id="debugLoggingEnabled" type="checkbox" />
+        启用调试日志（内容脚本/后台控制台）
+      </label>
+      <p class="hint">用于排查自动工具模式未触发的问题。</p>
+    </div>
+    <div class="row">
+      <button id="saveBtn">保存设置</button>
+      <button id="pairBtn">验证配对码</button>
+      <button id="reloadBtn">重载当前页面适配器</button>
+    </div>
+    <div class="status" id="status"></div>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

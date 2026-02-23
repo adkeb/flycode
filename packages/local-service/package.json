@@ -1,0 +1,29 @@
+{
+  "name": "@flycode/local-service",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cors": "^10.0.2",
+    "@flycode/shared-types": "0.1.0",
+    "fastify": "^5.2.1",
+    "fast-glob": "^3.3.3",
+    "mime-types": "^2.1.35",
+    "minimatch": "^10.0.1",
+    "pdf-parse": "^1.1.1",
+    "yaml": "^2.7.0"
+  },
+  "devDependencies": {
+    "@types/mime-types": "^2.1.4",
+    "@types/pdf-parse": "^1.1.5",
+    "tsx": "^4.19.3"
+  }
+}
