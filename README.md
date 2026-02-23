@@ -1,5 +1,9 @@
 # FlyCode
 
+注：
+当前版本仅完成deepseek的网页端使用开发，qwen等暂时没做适配
+当前版本仅在wsl2里测试过，win原生暂没测试
+
 FlyCode 是一个面向 Qwen/DeepSeek 网页聊天的本地文件桥接系统。
 
 - 浏览器侧：Chrome/Edge 扩展（Manifest V3）
