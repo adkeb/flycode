@@ -1,0 +1,18 @@
+/**
+ * FlyCode Note: Qwen DOM selectors
+ * Centralized selectors for chat.qwen.ai to avoid selector drift across logic files.
+ */
+
+export const QWEN_HOSTS = ["chat.qwen.ai"];
+
+export const QWEN_INPUT_SELECTORS = ["textarea.message-input-textarea", "textarea"];
+
+export const QWEN_SEND_BUTTON_SELECTORS = ["button.send-button"];
+
+export const QWEN_ASSISTANT_BLOCK_SELECTOR = "pre.qwen-markdown-code";
+
+export const QWEN_CODE_HEADER_SELECTOR = ".qwen-markdown-code-header > div:first-child";
+
+export const QWEN_CODE_BODY_SELECTOR = ".qwen-markdown-code-body";
+
+export const QWEN_CODE_BODY_LINE_SELECTOR = ".qwen-markdown-code-body .view-line";

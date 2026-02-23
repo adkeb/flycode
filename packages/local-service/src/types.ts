@@ -2,7 +2,15 @@
  * FlyCode Note: Local service interfaces
  * Declares policy schema, service contracts, audit payloads, and manager interfaces for dependency boundaries.
  */
-import type { ReadEncoding, SiteId, WriteBatchFileInput, WriteMode } from "@flycode/shared-types";
+import type {
+  ConfirmationEntry,
+  ConsoleEventEntry,
+  ReadEncoding,
+  SiteId,
+  SiteKeysResponse,
+  WriteBatchFileInput,
+  WriteMode
+} from "@flycode/shared-types";
 
 export interface RedactionRule {
   name: string;
@@ -59,6 +67,10 @@ export interface ServiceContext {
   policy: PolicyConfig;
   pairCodeManager: PairCodeManager;
   tokenManager: TokenManager;
+  siteKeyManager: SiteKeyManager;
+  confirmationManager: ConfirmationManager;
+  consoleEventLogger: ConsoleEventLogger;
+  appConfigManager: AppConfigManager;
   pathPolicy: PathPolicy;
   redactor: Redactor;
   auditLogger: AuditLogger;
@@ -127,6 +139,60 @@ export interface PairCodeManager {
 export interface TokenManager {
   issueToken(): Promise<{ token: string; expiresAt: Date }>;
   verifyToken(token: string): Promise<boolean>;
+}
+
+export interface SiteKeyManager {
+  getSiteKeys(): Promise<SiteKeysResponse>;
+  ensureSiteKeys(): Promise<SiteKeysResponse>;
+  rotateSiteKey(site: Exclude<SiteId, "unknown">): Promise<SiteKeysResponse>;
+  verifySiteKey(site: Exclude<SiteId, "unknown">, token: string): Promise<boolean>;
+}
+
+export interface ConfirmationDecision {
+  approved: boolean;
+  alwaysAllow?: boolean;
+}
+
+export interface ConfirmationManager {
+  createPending(input: {
+    site: Exclude<SiteId, "unknown">;
+    tool: string;
+    summary: string;
+    traceId: string;
+    request: unknown;
+  }): Promise<ConfirmationEntry>;
+  getById(id: string): Promise<ConfirmationEntry | null>;
+  resolve(id: string, input: ConfirmationDecision): Promise<ConfirmationEntry>;
+  shouldSkipConfirmation(site: Exclude<SiteId, "unknown">, tool: string): Promise<boolean>;
+  listRecent(limit: number): Promise<ConfirmationEntry[]>;
+  getRequestPayload(id: string): unknown | undefined;
+}
+
+export interface ConsoleEventLogger {
+  log(entry: ConsoleEventEntry): Promise<void>;
+  listRecent(input?: {
+    site?: SiteId | "all";
+    status?: "success" | "failed" | "pending" | "all";
+    tool?: string;
+    keyword?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  }): Promise<ConsoleEventEntry[]>;
+  cleanupExpired(retentionDays: number): Promise<void>;
+}
+
+export interface AppConfigData {
+  theme: "light" | "dark" | "system";
+  logRetentionDays: number;
+  servicePort: number;
+  alwaysAllow: Record<string, boolean>;
+}
+
+export interface AppConfigManager {
+  load(): Promise<AppConfigData>;
+  save(next: AppConfigData): Promise<AppConfigData>;
+  updateAlwaysAllow(site: Exclude<SiteId, "unknown">, tool: string, allow: boolean): Promise<AppConfigData>;
 }
 
 export interface PathPolicy {

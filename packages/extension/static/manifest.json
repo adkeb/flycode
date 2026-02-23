@@ -8,6 +8,7 @@
     "*://chat.qwen.ai/*",
     "*://www.deepseek.com/*",
     "*://chat.deepseek.com/*",
+    "*://gemini.google.com/*",
     "http://127.0.0.1/*"
   ],
   "background": {
@@ -19,19 +20,14 @@
       "matches": [
         "*://chat.qwen.ai/*",
         "*://www.deepseek.com/*",
-        "*://chat.deepseek.com/*"
+        "*://chat.deepseek.com/*",
+        "*://gemini.google.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"
     }
   ],
   "options_page": "options.html",
-  "web_accessible_resources": [
-    {
-      "resources": ["confirm.html", "confirm.js", "confirm.js.map"],
-      "matches": ["<all_urls>"]
-    }
-  ],
   "action": {
     "default_title": "FlyCode"
   }

@@ -17,8 +17,7 @@ await build({
   entryPoints: {
     background: path.join(root, "src/background/index.ts"),
     content: path.join(root, "src/content/index.ts"),
-    options: path.join(root, "src/options/index.ts"),
-    confirm: path.join(root, "src/confirm/index.ts")
+    options: path.join(root, "src/options/index.ts")
   },
   outdir: dist,
   bundle: true,

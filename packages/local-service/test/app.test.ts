@@ -6,7 +6,18 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import type { AuditEntry, AuditLogger, PolicyConfig, ServiceContext } from "../src/types.js";
+import type {
+  AppConfigManager,
+  AppConfigData,
+  AuditEntry,
+  AuditLogger,
+  ConfirmationDecision,
+  ConfirmationManager,
+  ConsoleEventLogger,
+  PolicyConfig,
+  ServiceContext,
+  SiteKeyManager
+} from "../src/types.js";
 import { buildApp } from "../src/app.js";
 import { FileTokenManager, InMemoryPairCodeManager } from "../src/security/pairing.js";
 import { DefaultFileService } from "../src/services/file-service.js";
@@ -15,12 +26,126 @@ import { DefaultProcessRunner } from "../src/services/process-runner.js";
 import { DefaultRedactor } from "../src/services/redactor.js";
 import { InMemoryWriteBatchManager } from "../src/services/write-batch-manager.js";
 import { InMemoryWriteManager } from "../src/services/write-manager.js";
+import type { ConfirmationEntry, ConsoleEventEntry, SiteId, SiteKeysResponse } from "@flycode/shared-types";
 
 class InMemoryAuditLogger implements AuditLogger {
   readonly entries: AuditEntry[] = [];
 
   async log(entry: AuditEntry): Promise<void> {
     this.entries.push(entry);
+  }
+}
+
+class TestSiteKeyManager implements SiteKeyManager {
+  private keys: SiteKeysResponse = {
+    createdAt: new Date().toISOString(),
+    rotatedAt: new Date().toISOString(),
+    sites: {
+      qwen: {
+        site: "qwen",
+        key: "test-qwen-key",
+        createdAt: new Date().toISOString(),
+        rotatedAt: new Date().toISOString()
+      },
+      deepseek: {
+        site: "deepseek",
+        key: "test-deepseek-key",
+        createdAt: new Date().toISOString(),
+        rotatedAt: new Date().toISOString()
+      },
+      gemini: {
+        site: "gemini",
+        key: "test-gemini-key",
+        createdAt: new Date().toISOString(),
+        rotatedAt: new Date().toISOString()
+      }
+    }
+  };
+
+  async getSiteKeys(): Promise<SiteKeysResponse> {
+    return this.keys;
+  }
+  async ensureSiteKeys(): Promise<SiteKeysResponse> {
+    return this.keys;
+  }
+  async rotateSiteKey(site: Exclude<SiteId, "unknown">): Promise<SiteKeysResponse> {
+    this.keys = {
+      ...this.keys,
+      rotatedAt: new Date().toISOString(),
+      sites: {
+        ...this.keys.sites,
+        [site]: {
+          site,
+          key: `rotated-${site}`,
+          createdAt: this.keys.sites[site]?.createdAt ?? new Date().toISOString(),
+          rotatedAt: new Date().toISOString()
+        }
+      }
+    };
+    return this.keys;
+  }
+  async verifySiteKey(site: Exclude<SiteId, "unknown">, token: string): Promise<boolean> {
+    return this.keys.sites[site]?.key === token;
+  }
+}
+
+class TestConfirmationManager implements ConfirmationManager {
+  async createPending(input: {
+    site: Exclude<SiteId, "unknown">;
+    tool: string;
+    summary: string;
+    traceId: string;
+    request: unknown;
+  }): Promise<ConfirmationEntry> {
+    return {
+      id: "pending-test",
+      site: input.site,
+      tool: input.tool,
+      summary: input.summary,
+      status: "pending",
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 120_000).toISOString()
+    };
+  }
+  async getById(_id: string): Promise<ConfirmationEntry | null> {
+    return null;
+  }
+  async resolve(_id: string, _input: ConfirmationDecision): Promise<ConfirmationEntry> {
+    throw new Error("not implemented");
+  }
+  async shouldSkipConfirmation(): Promise<boolean> {
+    return true;
+  }
+  async listRecent(): Promise<ConfirmationEntry[]> {
+    return [];
+  }
+  getRequestPayload(): unknown | undefined {
+    return undefined;
+  }
+}
+
+class TestConsoleLogger implements ConsoleEventLogger {
+  async log(_entry: ConsoleEventEntry): Promise<void> {}
+  async listRecent(): Promise<ConsoleEventEntry[]> {
+    return [];
+  }
+  async cleanupExpired(): Promise<void> {}
+}
+
+class TestAppConfigManager implements AppConfigManager {
+  async load(): Promise<AppConfigData> {
+    return {
+      theme: "system",
+      logRetentionDays: 30,
+      servicePort: 39393,
+      alwaysAllow: {}
+    };
+  }
+  async save(next: AppConfigData): Promise<AppConfigData> {
+    return next;
+  }
+  async updateAlwaysAllow(): Promise<AppConfigData> {
+    return this.load();
   }
 }
 
@@ -87,6 +212,10 @@ describe("local-service app", () => {
 
     const pairCodeManager = new InMemoryPairCodeManager(policy.auth.pair_code_ttl_minutes);
     const tokenManager = new FileTokenManager(policy.auth.token_ttl_days);
+    const siteKeyManager = new TestSiteKeyManager();
+    const confirmationManager = new TestConfirmationManager();
+    const consoleEventLogger = new TestConsoleLogger();
+    const appConfigManager = new TestAppConfigManager();
     const pathPolicy = new DefaultPathPolicy(policy);
     const redactor = new DefaultRedactor(policy);
     const auditLogger = new InMemoryAuditLogger();
@@ -99,6 +228,10 @@ describe("local-service app", () => {
       policy,
       pairCodeManager,
       tokenManager,
+      siteKeyManager,
+      confirmationManager,
+      consoleEventLogger,
+      appConfigManager,
       pathPolicy,
       redactor,
       auditLogger,

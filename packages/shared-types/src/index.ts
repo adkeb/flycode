@@ -2,7 +2,7 @@
  * FlyCode Note: Shared protocol contract
  * Defines cross-package request and response types so extension and local service stay in sync.
  */
-export type SiteId = "qwen" | "deepseek" | "unknown";
+export type SiteId = "qwen" | "deepseek" | "gemini" | "unknown";
 
 export type ApiErrorCode =
   | "UNAUTHORIZED"
@@ -283,4 +283,133 @@ export interface PairVerifyRequest {
 export interface PairVerifyResponse {
   token: string;
   expiresAt: string;
+}
+
+export type McpJsonRpcId = string | number;
+
+export interface McpRequestEnvelope<TParams = unknown> {
+  jsonrpc: "2.0";
+  id: McpJsonRpcId;
+  method: "initialize" | "tools/list" | "tools/call";
+  params?: TParams;
+}
+
+export interface McpError {
+  code: number;
+  message: string;
+  data?: unknown;
+}
+
+export interface McpResponseEnvelope<TResult = unknown> {
+  jsonrpc: "2.0";
+  id: McpJsonRpcId | null;
+  result?: TResult;
+  error?: McpError;
+}
+
+export interface McpToolDescriptor {
+  name: string;
+  description: string;
+  inputSchema: {
+    type: "object";
+    properties: Record<string, unknown>;
+    required?: string[];
+    additionalProperties?: boolean;
+  };
+}
+
+export interface McpInitializeParams {
+  protocolVersion?: string;
+  clientInfo?: {
+    name: string;
+    version: string;
+  };
+}
+
+export interface McpInitializeResult {
+  protocolVersion: "2024-11-05";
+  serverInfo: {
+    name: string;
+    version: string;
+  };
+  capabilities: {
+    tools: {
+      listChanged: boolean;
+    };
+  };
+}
+
+export interface McpToolCallParams {
+  name: string;
+  arguments?: Record<string, unknown>;
+  confirmationId?: string;
+}
+
+export interface McpToolCallContentItem {
+  type: "text";
+  text: string;
+}
+
+export interface McpToolCallResult {
+  content: McpToolCallContentItem[];
+  isError?: boolean;
+  meta?: {
+    auditId?: string;
+    truncated?: boolean;
+    pendingConfirmationId?: string;
+  };
+}
+
+export interface SiteKeyRecord {
+  site: Exclude<SiteId, "unknown">;
+  key: string;
+  createdAt: string;
+  rotatedAt: string;
+}
+
+export interface SiteKeysResponse {
+  createdAt: string;
+  rotatedAt: string;
+  sites: Partial<Record<Exclude<SiteId, "unknown">, SiteKeyRecord>>;
+}
+
+export type ConfirmationStatus = "pending" | "approved" | "rejected" | "timeout";
+
+export interface ConfirmationEntry {
+  id: string;
+  site: Exclude<SiteId, "unknown">;
+  tool: string;
+  summary: string;
+  status: ConfirmationStatus;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt?: string;
+}
+
+export interface ConfirmationDecisionRequest {
+  approved: boolean;
+  alwaysAllow?: boolean;
+}
+
+export interface ConsoleQueryRequest {
+  site?: SiteId | "all";
+  status?: "success" | "failed" | "pending" | "all";
+  tool?: string;
+  keyword?: string;
+  from?: string;
+  to?: string;
+  limit?: number;
+}
+
+export interface ConsoleEventEntry {
+  id: string;
+  timestamp: string;
+  site: SiteId;
+  method: string;
+  tool?: string;
+  status: "success" | "failed" | "pending";
+  durationMs?: number;
+  truncated?: boolean;
+  request?: unknown;
+  response?: unknown;
 }

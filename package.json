@@ -9,6 +9,7 @@
     "build": "npm run build --workspaces --if-present",
     "build:extension": "npm run build -w @flycode/extension",
     "build:extension:windows": "npm run build:extension && npm run sync:extension:windows",
+    "dev:desktop": "npm run dev -w @flycode/desktop-app",
     "dev:service": "npm run dev -w @flycode/local-service",
     "sync:extension:windows": "bash ./scripts/sync-extension-to-windows.sh",
     "test": "npm run test --workspaces --if-present",

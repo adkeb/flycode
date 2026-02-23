@@ -12,6 +12,7 @@
     "@flycode/shared-types": "0.1.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "esbuild": "^0.25.0",
+    "jsdom": "^26.0.0"
   }
 }

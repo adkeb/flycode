@@ -1,92 +1,152 @@
 <!doctype html>
-<!-- FlyCode Note: Options page template for configuring local service URL, token pairing, auto mode, and debug settings. -->
+<!-- FlyCode Note: V2 extension options page (minimal bridge settings). -->
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>FlyCode 设置</title>
+    <title>FlyCode 扩展（V2）</title>
     <style>
-      body { font-family: sans-serif; max-width: 720px; margin: 20px auto; line-height: 1.5; }
-      .row { margin-bottom: 12px; }
-      label { display: block; font-weight: 600; }
-      input, textarea { width: 100%; padding: 8px; box-sizing: border-box; }
-      button { padding: 8px 12px; margin-right: 8px; }
-      .hint { color: #555; font-size: 13px; }
-      .status { margin-top: 12px; min-height: 20px; }
+      :root {
+        --bg: #f7f8fb;
+        --fg: #1f2a37;
+        --muted: #5f6b7a;
+        --card: #ffffff;
+        --line: #d8deea;
+        --accent: #1f6feb;
+      }
+      body {
+        margin: 0;
+        font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+        background: var(--bg);
+        color: var(--fg);
+      }
+      .wrap {
+        max-width: 860px;
+        margin: 28px auto;
+        padding: 0 18px;
+      }
+      .card {
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        padding: 18px;
+        margin-bottom: 14px;
+      }
+      h1 {
+        margin: 0 0 10px;
+      }
+      h2 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      .row {
+        margin-bottom: 10px;
+      }
+      label {
+        display: block;
+        font-weight: 600;
+        margin-bottom: 4px;
+      }
+      input[type="text"],
+      input[type="number"] {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px 10px;
+        background: #fff;
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 2px 0 0;
+      }
+      .btns {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+      button {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 8px 12px;
+        background: #fff;
+        cursor: pointer;
+      }
+      button.primary {
+        background: var(--accent);
+        color: #fff;
+        border-color: var(--accent);
+      }
+      .status {
+        min-height: 22px;
+        font-weight: 600;
+      }
+      .grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 12px;
+      }
+      @media (max-width: 760px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
   <body>
-    <h1>FlyCode 扩展设置</h1>
-    <div class="row">
-      <label for="baseUrl">本地服务地址</label>
-      <input id="baseUrl" placeholder="http://127.0.0.1:39393" />
-    </div>
-    <div class="row">
-      <label for="token">Bearer Token</label>
-      <input id="token" placeholder="配对后自动写入 Token" />
-    </div>
-    <div class="row">
-      <label for="pairCode">配对码</label>
-      <input id="pairCode" placeholder="输入本地服务显示的 6 位配对码" />
-      <p class="hint">配对码一次性使用，可自动换取并保存 Token。</p>
-    </div>
-    <div class="row">
-      <label for="maxInjectTokens">注入 Token 上限</label>
-      <input id="maxInjectTokens" type="number" min="200" max="200000" />
-    </div>
-    <div class="row">
-      <label>
-        <input id="confirmWritesEnabled" type="checkbox" />
-        启用写入二次确认弹窗（默认）
-      </label>
-    </div>
-    <hr />
-    <h2>自动工具模式</h2>
-    <div class="row">
-      <label>
-        <input id="autoToolEnabled" type="checkbox" />
-        启用自动工具模式（监听 AI 的 `flycode-call` 代码块）
-      </label>
-      <p class="hint">开启后，扩展会扫描 AI 回复并自动执行识别到的本地文件命令。</p>
-    </div>
-    <div class="row">
-      <label>
-        <input id="autoToolAutoSend" type="checkbox" />
-        自动发送工具结果到聊天
-      </label>
-      <p class="hint">关闭后只注入输入框，需要你手动发送。</p>
-    </div>
-    <div class="row">
-      <label>
-        <input id="autoToolAllowWrite" type="checkbox" />
-        允许自动模式执行 `/fs.write`
-      </label>
-      <p class="hint">已默认开启。关闭后自动模式将阻止写入与批量写入。</p>
-    </div>
-    <div class="row">
-      <label>
-        <input id="compactResultDisplayEnabled" type="checkbox" />
-        精简显示 flycode-result（仅显示成功/失败）
-      </label>
-      <p class="hint">AI 仍会接收完整内容，此项只改变页面可视化展示。</p>
-    </div>
-    <div class="row">
-      <label for="autoToolMaxCallsPerTurn">每轮自动调用上限</label>
-      <input id="autoToolMaxCallsPerTurn" type="number" min="1" max="20" />
-      <p class="hint">限制模型持续请求工具导致的循环调用。</p>
-    </div>
-    <div class="row">
-      <label>
-        <input id="debugLoggingEnabled" type="checkbox" />
-        启用调试日志（内容脚本/后台控制台）
-      </label>
-      <p class="hint">用于排查自动工具模式未触发的问题。</p>
-    </div>
-    <div class="row">
-      <button id="saveBtn">保存设置</button>
-      <button id="pairBtn">验证配对码</button>
-      <button id="reloadBtn">重载当前页面适配器</button>
-    </div>
-    <div class="status" id="status"></div>
+    <main class="wrap">
+      <h1>FlyCode 扩展设置（V2 / MCP-only）</h1>
+
+      <section class="card">
+        <h2>应用连接</h2>
+        <div class="row">
+          <label for="appBaseUrl">FlyCode Desktop 服务地址</label>
+          <input id="appBaseUrl" type="text" placeholder="http://127.0.0.1:39393" />
+        </div>
+        <div class="row">
+          <label for="maxInjectTokens">注入预算（字符近似）</label>
+          <input id="maxInjectTokens" type="number" min="200" max="200000" />
+        </div>
+        <div class="btns">
+          <button class="primary" id="saveBtn">保存设置</button>
+          <button id="checkBtn">检测应用连接</button>
+          <button id="syncKeyBtn">同步站点密钥</button>
+          <button id="reloadBtn">重载站点页面</button>
+        </div>
+        <p class="hint">扩展不会再管理业务策略，只负责连接应用与网页注入。</p>
+      </section>
+
+      <section class="card">
+        <h2>自动模式</h2>
+        <div class="grid">
+          <label><input id="autoToolEnabled" type="checkbox" /> 启用自动工具模式</label>
+          <label><input id="autoToolAutoSend" type="checkbox" /> 自动发送 mcp-response</label>
+          <label><input id="compactResultDisplayEnabled" type="checkbox" /> 摘要显示 mcp-response</label>
+          <label><input id="debugLoggingEnabled" type="checkbox" /> 启用调试日志</label>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>站点密钥（只读）</h2>
+        <div class="row">
+          <label for="qwenKey">Qwen Key</label>
+          <input id="qwenKey" type="text" readonly />
+        </div>
+        <div class="row">
+          <label for="deepseekKey">DeepSeek Key</label>
+          <input id="deepseekKey" type="text" readonly />
+        </div>
+        <div class="row">
+          <label for="geminiKey">Gemini Key</label>
+          <input id="geminiKey" type="text" readonly />
+        </div>
+      </section>
+
+      <section class="card">
+        <div id="status" class="status"></div>
+      </section>
+    </main>
     <script type="module" src="options.js"></script>
   </body>
 </html>
+

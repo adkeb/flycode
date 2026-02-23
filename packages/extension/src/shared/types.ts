@@ -1,155 +1,62 @@
 /**
- * FlyCode Note: Extension message and settings types
- * Defines parsed command union and runtime message contracts exchanged between content and background scripts.
+ * FlyCode Note: Extension MCP message contracts
+ * Defines settings and runtime messages for MCP-only bridge execution.
  */
-import type { CommandResult, SiteId } from "@flycode/shared-types";
+import type {
+  ConfirmationEntry,
+  McpRequestEnvelope,
+  McpResponseEnvelope,
+  SiteId,
+  SiteKeysResponse
+} from "@flycode/shared-types";
+
+type KnownSiteId = Exclude<SiteId, "unknown">;
 
 export interface ExtensionSettings {
-  baseUrl: string;
-  token: string;
+  appBaseUrl: string;
   maxInjectTokens: number;
-  confirmWritesEnabled: boolean;
   autoToolEnabled: boolean;
   autoToolAutoSend: boolean;
-  autoToolAllowWrite: boolean;
-  autoToolMaxCallsPerTurn: number;
   compactResultDisplayEnabled: boolean;
   debugLoggingEnabled: boolean;
+  siteKeys: Partial<Record<KnownSiteId, string>>;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
-  baseUrl: "http://127.0.0.1:39393",
-  token: "",
+  appBaseUrl: "http://127.0.0.1:39393",
   maxInjectTokens: 12_000,
-  confirmWritesEnabled: true,
-  autoToolEnabled: false,
-  autoToolAutoSend: false,
-  autoToolAllowWrite: true,
-  autoToolMaxCallsPerTurn: 3,
+  autoToolEnabled: true,
+  autoToolAutoSend: true,
   compactResultDisplayEnabled: true,
-  debugLoggingEnabled: false
+  debugLoggingEnabled: false,
+  siteKeys: {}
 };
 
-export interface ParsedWriteBatchFile {
-  path: string;
-  mode?: "overwrite" | "append";
-  content: string;
-  expectedSha256?: string;
-}
-
-export type ParsedCommand =
-  | {
-      command: "fs.ls";
-      path: string;
-      depth?: number;
-      glob?: string;
-      raw: string;
-    }
-  | {
-      command: "fs.mkdir";
-      path: string;
-      parents?: boolean;
-      raw: string;
-    }
-  | {
-      command: "fs.read";
-      path: string;
-      range?: string;
-      line?: number;
-      lines?: string;
-      encoding?: "utf-8" | "base64" | "hex";
-      includeMeta?: boolean;
-      raw: string;
-    }
-  | {
-      command: "fs.search";
-      path: string;
-      query: string;
-      regex?: boolean;
-      glob?: string;
-      limit?: number;
-      extensions?: string[];
-      minBytes?: number;
-      maxBytes?: number;
-      mtimeFrom?: string;
-      mtimeTo?: string;
-      contextLines?: number;
-      raw: string;
-    }
-  | {
-      command: "fs.rm";
-      path: string;
-      recursive?: boolean;
-      force?: boolean;
-      raw: string;
-    }
-  | {
-      command: "fs.mv";
-      fromPath: string;
-      toPath: string;
-      overwrite?: boolean;
-      raw: string;
-    }
-  | {
-      command: "fs.chmod";
-      path: string;
-      mode: string;
-      raw: string;
-    }
-  | {
-      command: "fs.diff";
-      leftPath: string;
-      rightPath?: string;
-      rightContent?: string;
-      contextLines?: number;
-      raw: string;
-    }
-  | {
-      command: "fs.write";
-      path: string;
-      mode: "overwrite" | "append";
-      content: string;
-      expectedSha256?: string;
-      raw: string;
-    }
-  | {
-      command: "fs.writeBatch";
-      files: ParsedWriteBatchFile[];
-      raw: string;
-    }
-  | {
-      command: "process.run";
-      commandName: string;
-      args?: string[];
-      cwd?: string;
-      timeoutMs?: number;
-      env?: Record<string, string>;
-      raw: string;
-    }
-  | {
-      command: "shell.exec";
-      commandText: string;
-      cwd?: string;
-      timeoutMs?: number;
-      env?: Record<string, string>;
-      raw: string;
-    };
-
-export interface ExecuteCommandRequest {
-  type: "FLYCODE_EXECUTE";
-  command: ParsedCommand;
+export interface ExecuteMcpRequest {
+  type: "FLYCODE_MCP_EXECUTE";
   site: SiteId;
+  envelope: McpRequestEnvelope;
 }
 
-export interface ExecuteCommandResponse {
+export interface ExecuteMcpResponse {
   ok: boolean;
-  result?: CommandResult;
+  response?: McpResponseEnvelope;
   message?: string;
 }
 
-export interface VerifyPairCodeRequest {
-  type: "FLYCODE_VERIFY_PAIR";
-  pairCode: string;
+export interface PollConfirmationRequest {
+  type: "FLYCODE_CONFIRMATION_GET";
+  id: string;
+}
+
+export interface PollConfirmationResponse {
+  ok: boolean;
+  confirmation?: ConfirmationEntry;
+  message?: string;
+}
+
+export interface GetSettingsRequest {
+  type: "FLYCODE_GET_SETTINGS";
 }
 
 export interface SaveSettingsRequest {
@@ -157,24 +64,37 @@ export interface SaveSettingsRequest {
   settings: Partial<ExtensionSettings>;
 }
 
-export interface GetSettingsRequest {
-  type: "FLYCODE_GET_SETTINGS";
+export interface CheckAppStatusRequest {
+  type: "FLYCODE_APP_STATUS";
+}
+
+export interface SyncSiteKeysRequest {
+  type: "FLYCODE_SYNC_SITE_KEYS";
 }
 
 export interface ReloadTabsRequest {
   type: "FLYCODE_RELOAD_TABS";
 }
 
-export interface ConfirmDecisionMessage {
-  type: "FLYCODE_CONFIRM_DECISION";
-  requestId: string;
-  approved: boolean;
+export interface AppStatusResponse {
+  ok: boolean;
+  connected: boolean;
+  health?: unknown;
+  message?: string;
+}
+
+export interface SyncSiteKeysResponse {
+  ok: boolean;
+  keys?: SiteKeysResponse;
+  settings?: ExtensionSettings;
+  message?: string;
 }
 
 export type RuntimeMessage =
-  | ExecuteCommandRequest
-  | VerifyPairCodeRequest
-  | SaveSettingsRequest
+  | ExecuteMcpRequest
+  | PollConfirmationRequest
   | GetSettingsRequest
-  | ReloadTabsRequest
-  | ConfirmDecisionMessage;
+  | SaveSettingsRequest
+  | CheckAppStatusRequest
+  | SyncSiteKeysRequest
+  | ReloadTabsRequest;

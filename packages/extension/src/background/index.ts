@@ -1,13 +1,16 @@
 /**
- * FlyCode Note: Background message router
- * Handles runtime messages for settings, pairing, command execution, and confirmation popup workflow.
+ * FlyCode Note: Background MCP router
+ * Bridges content/options messages to local desktop app APIs and persists extension settings.
  */
-import { runCommand, verifyPairCode } from "./api-client.js";
-import type { CommandResult } from "@flycode/shared-types";
+import type { SiteId } from "@flycode/shared-types";
+import { callMcp, fetchHealth, fetchSiteKeys, getConfirmation } from "./api-client.js";
 import { getSettings, saveSettings } from "../shared/storage.js";
-import type { RuntimeMessage } from "../shared/types.js";
-
-const pendingConfirmations = new Map<string, (approved: boolean) => void>();
+import type {
+  AppStatusResponse,
+  ExecuteMcpResponse,
+  RuntimeMessage,
+  SyncSiteKeysResponse
+} from "../shared/types.js";
 
 chrome.runtime.onMessage.addListener((message: RuntimeMessage, _sender, sendResponse) => {
   void handleMessage(message)
@@ -31,124 +34,87 @@ async function handleMessage(message: RuntimeMessage): Promise<unknown> {
     return { ok: true, settings };
   }
 
-  if (message.type === "FLYCODE_VERIFY_PAIR") {
-    const current = await getSettings();
-    const verified = await verifyPairCode(current, message.pairCode);
-    const settings = await saveSettings({ token: verified.token });
-    return { ok: true, settings, expiresAt: verified.expiresAt };
+  if (message.type === "FLYCODE_APP_STATUS") {
+    return checkAppStatus();
+  }
+
+  if (message.type === "FLYCODE_SYNC_SITE_KEYS") {
+    return syncSiteKeys();
+  }
+
+  if (message.type === "FLYCODE_CONFIRMATION_GET") {
+    const settings = await getSettings();
+    const confirmation = await getConfirmation(settings, message.id);
+    return { ok: true, confirmation };
+  }
+
+  if (message.type === "FLYCODE_MCP_EXECUTE") {
+    const settings = await getSettings();
+    const response = await callMcp(settings, message.site, message.envelope);
+    const out: ExecuteMcpResponse = {
+      ok: true,
+      response
+    };
+    return out;
   }
 
   if (message.type === "FLYCODE_RELOAD_TABS") {
     const tabs = await chrome.tabs.query({
       url: ["*://chat.qwen.ai/*", "*://chat.deepseek.com/*", "*://www.deepseek.com/*"]
     });
-
     await Promise.all(tabs.map((tab) => (tab.id ? chrome.tabs.reload(tab.id) : Promise.resolve())));
     return { ok: true, count: tabs.length };
-  }
-
-  if (message.type === "FLYCODE_CONFIRM_DECISION") {
-    const resolve = pendingConfirmations.get(message.requestId);
-    if (resolve) {
-      resolve(message.approved);
-      pendingConfirmations.delete(message.requestId);
-    }
-
-    return { ok: true };
-  }
-
-  if (message.type === "FLYCODE_EXECUTE") {
-    const settings = await getSettings();
-    bgLog(settings.debugLoggingEnabled, "execute request", {
-      site: message.site,
-      command: message.command.command,
-      raw: message.command.raw
-    });
-    const result = await runCommand(settings, message.command, message.site, requestConfirmation);
-    const budgetedResult = applyClientTokenBudget(result, settings.maxInjectTokens);
-    bgLog(settings.debugLoggingEnabled, "execute result", {
-      ok: budgetedResult.ok,
-      errorCode: budgetedResult.errorCode,
-      auditId: budgetedResult.auditId,
-      truncated: budgetedResult.truncated
-    });
-    return { ok: true, result: budgetedResult };
   }
 
   return { ok: false, message: "Unsupported message type" };
 }
 
-function applyClientTokenBudget(result: CommandResult, maxTokens: number): CommandResult {
-  if (!result.ok || result.data === undefined) {
-    return result;
-  }
-
-  const maxChars = Math.max(200, maxTokens * 4);
-  const serialized = JSON.stringify(result.data);
-
-  if (serialized.length <= maxChars) {
-    return result;
-  }
-
-  const next: CommandResult = {
-    ...result,
-    truncated: true
-  };
-
-  if (isRecord(next.data) && typeof next.data.content === "string") {
-    next.data = {
-      ...next.data,
-      content: `${next.data.content.slice(0, maxChars)}\n\n[...TRUNCATED_BY_EXTENSION_TOKEN_BUDGET...]`
+async function checkAppStatus(): Promise<AppStatusResponse> {
+  const settings = await getSettings();
+  try {
+    const health = await fetchHealth(settings);
+    return {
+      ok: true,
+      connected: true,
+      health
     };
-    return next;
+  } catch (error) {
+    return {
+      ok: true,
+      connected: false,
+      message: (error as Error).message
+    };
   }
-
-  next.data = {
-    preview: `${serialized.slice(0, maxChars)}\n\n[...TRUNCATED_BY_EXTENSION_TOKEN_BUDGET...]`
-  };
-
-  return next;
 }
 
-function isRecord(input: unknown): input is Record<string, unknown> {
-  return typeof input === "object" && input !== null;
-}
-
-async function requestConfirmation(summary: string, requestId: string): Promise<boolean> {
-  const pageUrl = chrome.runtime.getURL(
-    `confirm.html?requestId=${encodeURIComponent(requestId)}&summary=${encodeURIComponent(summary)}`
-  );
-
-  await chrome.windows.create({
-    url: pageUrl,
-    type: "popup",
-    width: 640,
-    height: 520
-  });
-
-  return new Promise<boolean>((resolve) => {
-    pendingConfirmations.set(requestId, resolve);
-
-    const timeoutMs = 120_000;
-    setTimeout(() => {
-      if (!pendingConfirmations.has(requestId)) {
-        return;
+async function syncSiteKeys(): Promise<SyncSiteKeysResponse> {
+  const settings = await getSettings();
+  try {
+    const keys = await fetchSiteKeys(settings);
+    const next = await saveSettings({
+      siteKeys: {
+        qwen: keys.sites.qwen?.key ?? "",
+        deepseek: keys.sites.deepseek?.key ?? "",
+        gemini: keys.sites.gemini?.key ?? ""
       }
-      pendingConfirmations.delete(requestId);
-      resolve(false);
-    }, timeoutMs);
-  });
+    });
+    return {
+      ok: true,
+      keys,
+      settings: next
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: (error as Error).message
+    };
+  }
 }
 
-function bgLog(enabled: boolean, message: string, payload?: unknown): void {
-  if (!enabled) {
-    return;
+export function normalizeSite(site: string): SiteId {
+  if (site === "qwen" || site === "deepseek" || site === "gemini") {
+    return site;
   }
-
-  if (payload === undefined) {
-    console.info("[FlyCode][background]", message);
-    return;
-  }
-
-  console.info("[FlyCode][background]", message, payload);
+  return "unknown";
 }
+

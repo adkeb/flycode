@@ -23,13 +23,20 @@ import type {
 } from "@flycode/shared-types";
 import type { FastifyInstance } from "fastify";
 import { requireBearerAuth } from "./security/auth.js";
+import { registerMcpRoutes } from "./mcp-routes.js";
 import type { ServiceContext } from "./types.js";
 
 export async function registerRoutes(app: FastifyInstance, context: ServiceContext): Promise<void> {
+  await registerMcpRoutes(app, context);
+
   app.get("/v1/health", async () => ({
     ok: true,
     service: "flycode-local-service",
-    pairCodeExpiresAt: context.pairCodeManager.getExpiry().toISOString()
+    pairCodeExpiresAt: context.pairCodeManager.getExpiry().toISOString(),
+    mcp: {
+      transport: "streamable-http",
+      sites: ["qwen", "deepseek", "gemini"]
+    }
   }));
 
   app.post<{ Body: PairVerifyRequest }>("/v1/pair/verify", async (request, reply) => {

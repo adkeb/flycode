@@ -1,144 +1,107 @@
-# FlyCode
+# FlyCode V2
 
-注：
-当前版本仅完成deepseek的网页端使用开发，qwen等暂时没做适配
-当前版本仅在wsl2里测试过，win原生暂没测试
+FlyCode V2 是一个“桌面应用主导 + 浏览器扩展协同”的本地文件桥接系统：
 
-FlyCode 是一个面向 Qwen/DeepSeek 网页聊天的本地文件桥接系统。
+- `desktop-app`：启动即托管本地服务，提供确认中心、请求控制台、配置中心、主题切换（Renderer 使用 React + Vite + Mantine）
+- `local-service`：本地工具执行层，提供 MCP Streamable HTTP、策略校验、审计日志
+- `extension`：网页拦截与注入层，识别 `mcp-request`、执行并回填 `mcp-response`
+- `shared-types`：跨包共享协议类型
 
-- 浏览器侧：Chrome/Edge 扩展（Manifest V3）
-- 本地侧：WSL2 中运行的 Node.js 服务（`127.0.0.1:39393`）
-- 命令集合：`/fs.ls`、`/fs.mkdir`、`/fs.read`、`/fs.search`、`/fs.write`、`/fs.rm`、`/fs.mv`、`/fs.chmod`、`/fs.diff`、`/process.run`、`/shell.exec`
+V2 为 **MCP-only** 协议，旧 `flycode-call/result` 仅作为历史兼容文档，不再执行。
 
-## Monorepo 目录结构
+## 目录结构
 
-- `packages/shared-types`：前后端共享请求/响应类型
-- `packages/local-service`：本地文件 API 服务（策略/鉴权/审计）
-- `packages/extension`：浏览器扩展（拦截斜杠命令）
-- `docs`：安装、使用和排障文档
+- `packages/desktop-app`：Electron 桌面应用（开发模式运行）
+- `packages/local-service`：本地服务（MCP + 文件/进程工具）
+- `packages/extension`：Chrome/Edge 扩展
+- `packages/shared-types`：共享类型
+- `docs`：提示词、使用说明、风险说明
+
+## 核心能力
+
+- MCP 方法：`initialize`、`tools/list`、`tools/call`
+- MCP 路由：`POST /mcp/{siteId}`（`qwen`、`deepseek`、`gemini`）
+- 工具集合：
+  - 文件：`fs.ls` `fs.mkdir` `fs.read` `fs.search` `fs.write` `fs.writeBatch` `fs.rm` `fs.mv` `fs.chmod` `fs.diff`
+  - 进程：`process.run` `shell.exec`
+- 分站点密钥：`~/.flycode/site-keys.json`
+- 确认中心：高风险工具默认进入 `PENDING_CONFIRMATION`，应用内审批
+- 控制台日志：`~/.flycode/console/YYYY-MM-DD.jsonl`（默认保留 30 天）
 
 ## 快速开始（开发模式）
 
-1. 安装依赖：
+1. 安装依赖
 
 ```bash
 npm install
 ```
 
-2. 构建全部包：
+2. 构建全部包
 
 ```bash
 npm run build
 ```
 
-3. 启动本地服务（WSL2 内）：
+3. 启动桌面应用（会自动拉起本地服务，开发模式含 Vite 热更新）
 
 ```bash
-npm run dev -w @flycode/local-service
+npm run dev -w @flycode/desktop-app
 ```
 
-4. 构建扩展：
+说明：
+- `dev` 会并行启动 `local-service + vite + electron`
+- 若 Electron 本体损坏，`dev` 会自动降级为“Web 预览模式”（Vite + local-service 仍保持运行）
+- 修复 Electron 可执行：
+  - `npm rebuild electron -w @flycode/desktop-app`
+
+4. 构建并安装扩展
 
 ```bash
 npm run build -w @flycode/extension
 ```
 
-5. 在 Chrome/Edge 加载扩展：
-- 打开 `chrome://extensions` 或 `edge://extensions`
-- 开启“开发者模式”
-- 点击“加载已解压的扩展程序”，选择 `packages/extension/dist`
+在 `chrome://extensions` 或 `edge://extensions` 开启开发者模式，加载 `packages/extension/dist`。
 
-6. 扩展与本地服务配对：
-- 查看本地服务终端输出的 6 位配对码
-- 打开扩展 Options 页面
-- 填写服务地址（默认 `http://127.0.0.1:39393`）
-- 输入配对码并点击 `Verify Pair Code`
+5. 扩展 Options 页面点击“同步站点密钥”，确保拿到 `qwen/deepseek` key。
 
-## 命令语法
+## MCP 对话协议（网页 AI）
 
-- `/fs.ls <path> [--depth N] [--glob PATTERN]`
-- `/fs.mkdir <path> [--parents]`
-- `/fs.read <path> [--head N|--tail N|--range a:b|--line N|--lines a-b] [--encoding utf-8|base64|hex] [--no-meta]`
-- `/fs.search <path> --query "..." [--regex] [--glob PATTERN] [--limit N] [--ext EXT|--extensions csv] [--min-bytes N] [--max-bytes N] [--mtime-from ISO] [--mtime-to ISO] [--context N]`
-- `/fs.write <path> --mode overwrite|append --content """...""" [--expectedSha256 HASH]`
-- `/fs.rm <path> [--recursive] [--force]`
-- `/fs.mv <fromPath> <toPath> [--overwrite]`
-- `/fs.chmod <path> --mode <octal>`
-- `/fs.diff <leftPath> [--right-path <path> | --right-content """..."""] [--context N]`
-- `/process.run <command> [--arg <arg>]... [--cwd <path>] [--timeout-ms N] [--env KEY=VALUE]`
-- `/shell.exec --command "..." [--cwd <path>] [--timeout-ms N] [--env KEY=VALUE]`
+AI 调用工具时应输出：
 
-仅支持 JSON 调用的工具：
-- `fs.writeBatch`（仅自动工具模式支持，v1 不支持斜杠语法）
-
-示例：
-
-```flycode-call
-{"id":"call-001","tool":"fs.writeBatch","args":{"files":[{"path":"/project/index.html","mode":"overwrite","content":"<!doctype html><title>FlyCode</title>"},{"path":"/project/style.css","mode":"append","content":"\nbody{color:#090;}"}]}}
+```mcp-request
+{"jsonrpc":"2.0","id":"call-001","method":"tools/call","params":{"name":"fs.read","arguments":{"path":"/root/work/flycode/README.md"}}}
 ```
 
-`fs.writeBatch` 在 v1 的执行语义：
-- `prepare -> （可选确认）-> commit`
-- 任一文件失败即停止，并回滚已写入文件
+扩展执行后注入：
 
-命令执行安全约束：
-- `process.run`/`shell.exec` 为非交互、单次执行
-- 命令首 token 必须在 `process.allowed_commands` 白名单内
-- `cwd` 必须通过 `allowed_roots` 路径策略校验
-- 超时与输出上限由策略强制控制
+```mcp-response
+{"jsonrpc":"2.0","id":"call-001","result":{"content":[{"type":"text","text":"..."}],"meta":{"auditId":"...","truncated":false}}}
+```
 
-命令执行成功后，扩展会将输入框内容替换为结构化 `flycode` 结果块。
+若需人工确认：
 
-也支持自动工具模式：
-- 在扩展 Options 中启用自动工具模式
-- 让 AI 输出包含 `/fs.*` 命令的 `flycode-call` 代码块
-- 扩展自动执行并将 `flycode-result` 注入聊天输入框
+- `result.meta.pendingConfirmationId` 会返回确认 ID
+- 扩展显示等待状态，并轮询确认结果
+- 桌面应用批准后，扩展自动重试同一调用
 
-## 策略文件
+## 配置文件
 
-服务会加载 `~/.flycode/policy.yaml`。
+- `~/.flycode/policy.yaml`：策略主配置（路径白名单、命令白名单、脱敏、限制）
+- `~/.flycode/site-keys.json`：站点桥接 key
+- `~/.flycode/app-config.json`：主题、日志保留、应用偏好
+- `~/.flycode/audit/YYYY-MM-DD.jsonl`：审计日志
+- `~/.flycode/console/YYYY-MM-DD.jsonl`：控制台事件
 
-关键字段：
-
-- `allowed_roots`
-- `deny_globs`
-- `site_allowlist`
-- `limits.max_file_bytes`
-- `limits.max_inject_tokens`
-- `write.require_confirmation_default`
-- `write.allow_disable_confirmation`
-- `mutation.allow_rm`
-- `mutation.allow_mv`
-- `mutation.allow_chmod`
-- `mutation.allow_write_batch`
-- `process.enabled`
-- `process.allowed_commands`
-- `process.allowed_cwds`
-- `process.default_timeout_ms`
-- `process.max_timeout_ms`
-- `process.max_output_bytes`
-- `redaction.enabled`
-- `redaction.rules`
-
-## 审计日志
-
-每次操作都会写入：
-
-- `~/.flycode/audit/YYYY-MM-DD.jsonl`
-
-字段包含：时间戳、站点、命令、路径、结果、trace ID、audit ID。
-
-## 测试
+## 运行与测试
 
 ```bash
+npm run typecheck
 npm run test
 ```
 
 ## 说明
 
-- 服务仅监听 `127.0.0.1`。
-- 当前版本仅面向本地开发调试（未上架商店）。
-- v1 未实现 OCR，仅在代码中预留 OCR Provider 接口。
-- 更多信息见：`docs/wsl2-network-troubleshooting.md`、`docs/risk-notes.md`。
-- 中文使用文档：`docs/usage-guide.zh-CN.md`。
-- 中文严格系统提示词模板：`docs/system-prompt.strict.zh-CN.md`。
+- 服务仅监听 `127.0.0.1`
+- V2 首版为开发运行模式（不强制安装包）
+- 支持站点：DeepSeek + Qwen；Gemini 当前为预留适配位
+- 风险与限制见 `docs/risk-notes.md`

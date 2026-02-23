@@ -88,13 +88,13 @@ function extractPath(body: unknown): string | undefined {
   return undefined;
 }
 
-function extractSite(body: unknown): "qwen" | "deepseek" | "unknown" | undefined {
+function extractSite(body: unknown): "qwen" | "deepseek" | "gemini" | "unknown" | undefined {
   if (!body || typeof body !== "object") {
     return undefined;
   }
 
   const site = (body as { site?: unknown }).site;
-  if (site === "qwen" || site === "deepseek" || site === "unknown") {
+  if (site === "qwen" || site === "deepseek" || site === "gemini" || site === "unknown") {
     return site;
   }
 
@@ -116,5 +116,6 @@ function inferCommand(url: string): string | undefined {
   if (url.includes("/v1/fs/write/commit")) return "fs.write.commit";
   if (url.includes("/v1/process/run")) return "process.run";
   if (url.includes("/v1/shell/exec")) return "shell.exec";
+  if (url.includes("/mcp/")) return "mcp";
   return undefined;
 }
