@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: DOM adapter implementation
+ * Locates chat input elements, injects text, submits messages, and provides conversation identity for dedupe.
+ */
 import type { SiteAdapter } from "./types.js";
 import type { SiteId } from "@flycode/shared-types";
 

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Fastify app composition
+ * Builds the HTTP app, wires CORS and unified error handling, and emits audit records for failures.
+ */
 import cors from "@fastify/cors";
 import Fastify, { type FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";

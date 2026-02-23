@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Process execution sandbox
+ * Runs allowed commands with cwd/timeout/output limits, then redacts and truncates command output safely.
+ */
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { applyTokenBudget } from "./token-budget.js";

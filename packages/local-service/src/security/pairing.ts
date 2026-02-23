@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Pair code and token storage
+ * Implements short-lived one-time pair codes and token issue/verify with on-disk persistence.
+ */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomBytes, randomInt } from "node:crypto";

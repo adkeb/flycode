@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Manual file picker injector
+ * Adds floating upload buttons to select files or folders and inject summarized payload into chat input.
+ */
 import type { ExtensionSettings } from "../shared/types.js";
 
 interface InstallUploadLauncherInput {

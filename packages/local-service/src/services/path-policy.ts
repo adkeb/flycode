@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Path and site policy enforcement
+ * Normalizes Linux and Windows paths, checks allowed roots and deny globs, and validates site allowlist.
+ */
 import os from "node:os";
 import path from "node:path";
 import { minimatch } from "minimatch";

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Content script orchestrator
+ * Intercepts manual slash commands, runs auto tool mode, deduplicates executions, and masks result blocks.
+ */
 import type { CommandResult } from "@flycode/shared-types";
 import type { AutoToolCall } from "./auto-tool.js";
 import { parseAutoToolCallFromBlock } from "./auto-tool.js";

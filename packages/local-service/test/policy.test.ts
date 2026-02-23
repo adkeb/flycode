@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Path policy tests
+ * Validates cross-platform path normalization plus allowlist and denylist enforcement.
+ */
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { DefaultPathPolicy } from "../src/services/path-policy.js";

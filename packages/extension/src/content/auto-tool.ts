@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Auto tool block parser
+ * Parses flycode-call blocks from AI output and converts JSON tool objects into executable commands.
+ */
 import { parseCommand } from "../shared/parser.js";
 import type { ParsedCommand } from "../shared/types.js";
 

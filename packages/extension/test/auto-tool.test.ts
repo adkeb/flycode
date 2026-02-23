@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Auto tool parsing tests
+ * Verifies flycode-call parsing, JSON tool conversion, ID requirements, and stable command hashing.
+ */
 import { describe, expect, it } from "vitest";
 import { parseAutoToolCallFromBlock } from "../src/content/auto-tool.js";
 

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Slash command parser
+ * Parses user command text into strongly typed command objects with flag validation and mutual exclusions.
+ */
 import type { ParsedCommand } from "./types.js";
 
 export function parseCommand(input: string): ParsedCommand | null {

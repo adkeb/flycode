@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Service integration tests
+ * Covers auth, routes, file tools, batch rollback, and process execution behavior in end-to-end style.
+ */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";

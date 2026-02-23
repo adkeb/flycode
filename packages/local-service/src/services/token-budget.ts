@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Injection size guard
+ * Estimates token usage and truncates oversized payloads to keep prompt injection within configured limits.
+ */
 export function applyTokenBudget(content: string, maxTokens: number): { content: string; truncated: boolean } {
   const estimatedTokens = estimateTokens(content);
   if (estimatedTokens <= maxTokens) {

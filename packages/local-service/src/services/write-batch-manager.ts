@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Transactional batch writer
+ * Prepares and commits multi-file writes, and rolls back already-written files on first failure.
+ */
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import type { SiteId, WriteMode } from "@flycode/shared-types";

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Single write transaction manager
+ * Implements prepare/commit flow with optional confirmation and expected hash conflict checks.
+ */
 import { randomUUID } from "node:crypto";
 import type { SiteId, WriteMode } from "@flycode/shared-types";
 import type { FileService, PathPolicy, PendingWriteOp, PolicyConfig, WriteManager } from "../types.js";

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Command parser tests
+ * Covers valid and invalid slash command parsing for file tools and process execution commands.
+ */
 import { describe, expect, it } from "vitest";
 import { parseCommand } from "../src/shared/parser.js";
 

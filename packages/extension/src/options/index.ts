@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Options page controller
+ * Loads and saves extension settings, handles pair code verification, and reloads active adapter tabs.
+ */
 import type { ExtensionSettings } from "../shared/types.js";
 
 const baseUrlInput = document.getElementById("baseUrl") as HTMLInputElement;

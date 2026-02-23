@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: HTTP route registry
+ * Registers health, pairing, file tools, batch write, and process execution endpoints with audit logging.
+ */
 import { randomUUID } from "node:crypto";
 import type {
   FsChmodRequest,

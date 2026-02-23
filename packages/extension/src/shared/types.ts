@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Extension message and settings types
+ * Defines parsed command union and runtime message contracts exchanged between content and background scripts.
+ */
 import type { CommandResult, SiteId } from "@flycode/shared-types";
 
 export interface ExtensionSettings {

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Extension build script
+ * Bundles extension entrypoints with esbuild and copies static assets into dist output folder.
+ */
 import { build } from "esbuild";
 import fs from "node:fs/promises";
 import path from "node:path";

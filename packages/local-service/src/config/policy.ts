@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Policy loader and normalizer
+ * Loads ~/.flycode/policy.yaml, merges defaults, validates ranges, and persists normalized values.
+ */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";

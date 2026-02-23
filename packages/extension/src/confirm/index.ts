@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Write confirmation popup logic
+ * Reads pending summary from URL and sends approve or reject decision back to background script.
+ */
 const summaryEl = document.getElementById("summary") as HTMLPreElement;
 const approveBtn = document.getElementById("approveBtn") as HTMLButtonElement;
 const denyBtn = document.getElementById("denyBtn") as HTMLButtonElement;

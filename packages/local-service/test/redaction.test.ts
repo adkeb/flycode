@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Redaction and budget tests
+ * Checks regex-based secret masking and token budget truncation safeguards.
+ */
 import { describe, expect, it } from "vitest";
 import { applyTokenBudget, estimateTokens } from "../src/services/token-budget.js";
 import { DefaultRedactor } from "../src/services/redactor.js";

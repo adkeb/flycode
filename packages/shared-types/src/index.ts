@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Shared protocol contract
+ * Defines cross-package request and response types so extension and local service stay in sync.
+ */
 export type SiteId = "qwen" | "deepseek" | "unknown";
 
 export type ApiErrorCode =

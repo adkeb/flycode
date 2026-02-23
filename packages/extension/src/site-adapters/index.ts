@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Adapter resolver
+ * Selects Qwen or DeepSeek DOM adapter by host and falls back to generic adapter on unknown hosts.
+ */
 import type { SiteId } from "@flycode/shared-types";
 import { DomSiteAdapter } from "./base.js";
 import type { SiteAdapter } from "./types.js";

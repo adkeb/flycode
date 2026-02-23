@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Audit log writer
+ * Appends structured JSON lines to daily audit files under ~/.flycode/audit.
+ */
 import fs from "node:fs/promises";
 import path from "node:path";
 import { getFlycodeHomeDir } from "../config/policy.js";

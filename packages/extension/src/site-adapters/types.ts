@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Site adapter contract
+ * Defines minimal interface content script needs for input access, injection, and conversation tracking.
+ */
 import type { SiteId } from "@flycode/shared-types";
 
 export interface SiteAdapter {

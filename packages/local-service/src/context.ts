@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Runtime dependency container
+ * Creates and wires policy, auth, path policy, services, and managers used by route handlers.
+ */
 import { loadPolicyConfig } from "./config/policy.js";
 import { FileTokenManager, InMemoryPairCodeManager } from "./security/pairing.js";
 import { FileAuditLogger } from "./services/audit.js";

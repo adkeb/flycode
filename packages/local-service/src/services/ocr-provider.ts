@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: OCR extension point
+ * Provides reserved interfaces for future OCR providers without coupling current v1 behavior.
+ */
 export interface OcrProvider {
   name: string;
   extractText(_filePath: string): Promise<string>;

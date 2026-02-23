@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Background message router
+ * Handles runtime messages for settings, pairing, command execution, and confirmation popup workflow.
+ */
 import { runCommand, verifyPairCode } from "./api-client.js";
 import type { CommandResult } from "@flycode/shared-types";
 import { getSettings, saveSettings } from "../shared/storage.js";

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Sensitive data redaction
+ * Compiles configured regex rules and masks matching content before data is returned to browser pages.
+ */
 import type { PolicyConfig, Redactor, RedactionRule } from "../types.js";
 
 interface CompiledRule {

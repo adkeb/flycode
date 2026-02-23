@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Service entrypoint
+ * Starts the local server on localhost, prints policy path and pair code for browser extension pairing.
+ */
 import { buildApp } from "./app.js";
 import { getPolicyFilePath } from "./config/policy.js";
 

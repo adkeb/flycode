@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Core file operations
+ * Implements ls/mkdir/read/search/write/rm/mv/chmod/diff with policy checks, redaction, and token budgeting.
+ */
 import fs from "node:fs/promises";
 import path from "node:path";
 import mime from "mime-types";

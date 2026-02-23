@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# FlyCode Note: Syncs the built extension dist directory into the configured Windows path for easy Edge loading.
 set -euo pipefail
 
 DEST_DIR="/mnt/c/Users/a1881/Documents/flycode-extension"

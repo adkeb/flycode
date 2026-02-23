@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Extension settings storage
+ * Wraps chrome.storage access with defaults so runtime and options pages share consistent settings.
+ */
 import type { ExtensionSettings } from "./types.js";
 import { DEFAULT_SETTINGS } from "./types.js";
 

@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Background API gateway
+ * Maps parsed commands to local service endpoints, including write prepare/commit confirmation flow.
+ */
 import type {
   FsChmodRequest,
   FsDiffRequest,

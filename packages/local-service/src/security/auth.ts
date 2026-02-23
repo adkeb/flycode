@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Bearer authentication guard
+ * Validates Authorization header and token existence for all protected API routes.
+ */
 import type { FastifyReply, FastifyRequest } from "fastify";
 import type { TokenManager } from "../types.js";
 import { AppError } from "../utils/errors.js";

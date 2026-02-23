@@ -1,3 +1,7 @@
+/**
+ * FlyCode Note: Local service interfaces
+ * Declares policy schema, service contracts, audit payloads, and manager interfaces for dependency boundaries.
+ */
 import type { ReadEncoding, SiteId, WriteBatchFileInput, WriteMode } from "@flycode/shared-types";
 
 export interface RedactionRule {
