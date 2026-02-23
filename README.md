@@ -1,56 +1,56 @@
 # FlyCode
 
-FlyCode is a local bridge for Qwen/DeepSeek web chat pages.
+FlyCode 是一个面向 Qwen/DeepSeek 网页聊天的本地文件桥接系统。
 
-- Browser side: Chrome/Edge extension (Manifest V3)
-- Local side: Node.js service on WSL2 (`127.0.0.1:39393`)
-- Commands: `/fs.ls`, `/fs.mkdir`, `/fs.read`, `/fs.search`, `/fs.write`, `/fs.rm`, `/fs.mv`, `/fs.chmod`, `/fs.diff`, `/process.run`, `/shell.exec`
+- 浏览器侧：Chrome/Edge 扩展（Manifest V3）
+- 本地侧：WSL2 中运行的 Node.js 服务（`127.0.0.1:39393`）
+- 命令集合：`/fs.ls`、`/fs.mkdir`、`/fs.read`、`/fs.search`、`/fs.write`、`/fs.rm`、`/fs.mv`、`/fs.chmod`、`/fs.diff`、`/process.run`、`/shell.exec`
 
-## Monorepo Layout
+## Monorepo 目录结构
 
-- `packages/shared-types`: shared request/response types
-- `packages/local-service`: local file API with policy/auth/audit
-- `packages/extension`: browser extension that intercepts slash commands
-- `docs`: setup and troubleshooting docs
+- `packages/shared-types`：前后端共享请求/响应类型
+- `packages/local-service`：本地文件 API 服务（策略/鉴权/审计）
+- `packages/extension`：浏览器扩展（拦截斜杠命令）
+- `docs`：安装、使用和排障文档
 
-## Quick Start (Development)
+## 快速开始（开发模式）
 
-1. Install dependencies:
+1. 安装依赖：
 
 ```bash
 npm install
 ```
 
-2. Build everything:
+2. 构建全部包：
 
 ```bash
 npm run build
 ```
 
-3. Start local service (inside WSL2):
+3. 启动本地服务（WSL2 内）：
 
 ```bash
 npm run dev -w @flycode/local-service
 ```
 
-4. Build extension:
+4. 构建扩展：
 
 ```bash
 npm run build -w @flycode/extension
 ```
 
-5. Load extension in Chrome/Edge:
-- Open `chrome://extensions` or `edge://extensions`
-- Enable `Developer mode`
-- `Load unpacked` -> choose `packages/extension/dist`
+5. 在 Chrome/Edge 加载扩展：
+- 打开 `chrome://extensions` 或 `edge://extensions`
+- 开启“开发者模式”
+- 点击“加载已解压的扩展程序”，选择 `packages/extension/dist`
 
-6. Pair extension with local service:
-- Read pair code printed by local service terminal
-- Open extension options page
-- Fill service URL (default `http://127.0.0.1:39393`)
-- Enter pair code, click `Verify Pair Code`
+6. 扩展与本地服务配对：
+- 查看本地服务终端输出的 6 位配对码
+- 打开扩展 Options 页面
+- 填写服务地址（默认 `http://127.0.0.1:39393`）
+- 输入配对码并点击 `Verify Pair Code`
 
-## Command Syntax
+## 命令语法
 
 - `/fs.ls <path> [--depth N] [--glob PATTERN]`
 - `/fs.mkdir <path> [--parents]`
@@ -64,37 +64,37 @@ npm run build -w @flycode/extension
 - `/process.run <command> [--arg <arg>]... [--cwd <path>] [--timeout-ms N] [--env KEY=VALUE]`
 - `/shell.exec --command "..." [--cwd <path>] [--timeout-ms N] [--env KEY=VALUE]`
 
-JSON-only tool call:
-- `fs.writeBatch` (auto tool mode only, no slash syntax in v1)
+仅支持 JSON 调用的工具：
+- `fs.writeBatch`（仅自动工具模式支持，v1 不支持斜杠语法）
 
-Example:
+示例：
 
 ```flycode-call
 {"id":"call-001","tool":"fs.writeBatch","args":{"files":[{"path":"/project/index.html","mode":"overwrite","content":"<!doctype html><title>FlyCode</title>"},{"path":"/project/style.css","mode":"append","content":"\nbody{color:#090;}"}]}}
 ```
 
-`fs.writeBatch` semantics in v1:
-- prepare -> (optional confirm) -> commit
-- stop on first failure and rollback previously written files
+`fs.writeBatch` 在 v1 的执行语义：
+- `prepare -> （可选确认）-> commit`
+- 任一文件失败即停止，并回滚已写入文件
 
-Process execution safety:
-- `process.run`/`shell.exec` are non-interactive single-shot executions
-- first command token must be in `process.allowed_commands`
-- `cwd` must pass `allowed_roots` path policy
-- timeout and output limits are enforced by policy
+命令执行安全约束：
+- `process.run`/`shell.exec` 为非交互、单次执行
+- 命令首 token 必须在 `process.allowed_commands` 白名单内
+- `cwd` 必须通过 `allowed_roots` 路径策略校验
+- 超时与输出上限由策略强制控制
 
-When command execution succeeds, the extension replaces your input with a structured `flycode` block.
+命令执行成功后，扩展会将输入框内容替换为结构化 `flycode` 结果块。
 
-Auto tool mode is also available:
-- Enable it in extension Options.
-- Let AI output a `flycode-call` code block containing `/fs.*` command.
-- Extension will execute and inject `flycode-result` back into the chat input.
+也支持自动工具模式：
+- 在扩展 Options 中启用自动工具模式
+- 让 AI 输出包含 `/fs.*` 命令的 `flycode-call` 代码块
+- 扩展自动执行并将 `flycode-result` 注入聊天输入框
 
-## Policy File
+## 策略文件
 
-The service loads `~/.flycode/policy.yaml`.
+服务会加载 `~/.flycode/policy.yaml`。
 
-Important fields:
+关键字段：
 
 - `allowed_roots`
 - `deny_globs`
@@ -116,25 +116,25 @@ Important fields:
 - `redaction.enabled`
 - `redaction.rules`
 
-## Audit Log
+## 审计日志
 
-Each operation is written to:
+每次操作都会写入：
 
 - `~/.flycode/audit/YYYY-MM-DD.jsonl`
 
-Fields include timestamp, site, command, path, result, trace ID, and audit ID.
+字段包含：时间戳、站点、命令、路径、结果、trace ID、audit ID。
 
-## Testing
+## 测试
 
 ```bash
 npm run test
 ```
 
-## Notes
+## 说明
 
-- Service listens only on `127.0.0.1`.
-- First release is development-mode only (no store packaging).
-- OCR is intentionally not implemented in v1; an OCR provider interface is reserved in code.
-- See `docs/wsl2-network-troubleshooting.md` and `docs/risk-notes.md`.
-- Chinese usage guide: `docs/usage-guide.zh-CN.md`.
-- Strict system prompt template (Chinese): `docs/system-prompt.strict.zh-CN.md`.
+- 服务仅监听 `127.0.0.1`。
+- 当前版本仅面向本地开发调试（未上架商店）。
+- v1 未实现 OCR，仅在代码中预留 OCR Provider 接口。
+- 更多信息见：`docs/wsl2-network-troubleshooting.md`、`docs/risk-notes.md`。
+- 中文使用文档：`docs/usage-guide.zh-CN.md`。
+- 中文严格系统提示词模板：`docs/system-prompt.strict.zh-CN.md`。
