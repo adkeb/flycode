@@ -77,6 +77,9 @@ export class QwenSiteAdapter implements SiteAdapter {
     }
     const beforeUserCount = document.querySelectorAll(".qwen-chat-message-user").length;
     const beforeValue = this.getCurrentText();
+    const hiddenTab = document.hidden;
+    const buttonWaitMs = hiddenTab ? 2600 : 420;
+    const enterWaitMs = hiddenTab ? 9000 : 1200;
 
     let attempts = 0;
     const buttonDelays = [0, 80, 220];
@@ -91,14 +94,14 @@ export class QwenSiteAdapter implements SiteAdapter {
       }
       attempts += 1;
       button.click();
-      if (await this.waitForSubmitSignal(beforeUserCount, beforeValue, 420)) {
+      if (await this.waitForSubmitSignal(beforeUserCount, beforeValue, buttonWaitMs)) {
         return { ok: true, method: "button", attempts };
       }
     }
 
     attempts += 1;
     this.dispatchEnter(input);
-    if (await this.waitForSubmitSignal(beforeUserCount, beforeValue, 1200)) {
+    if (await this.waitForSubmitSignal(beforeUserCount, beforeValue, enterWaitMs)) {
       return { ok: true, method: "enter", attempts };
     }
     return { ok: false, method: "enter", attempts };
@@ -209,19 +212,40 @@ export class QwenSiteAdapter implements SiteAdapter {
   }
 
   private findEnabledSendButton(): HTMLButtonElement | null {
-    for (const selector of QWEN_SEND_BUTTON_SELECTORS) {
-      const button = document.querySelector(selector);
-      if (!(button instanceof HTMLButtonElement)) {
-        continue;
+    const input = this.findInput();
+    const roots: ParentNode[] = [];
+    if (input) {
+      const nearby = input.closest("form, .chat-input, .message-input, .message-input-wrap, .input-area");
+      if (nearby) {
+        roots.push(nearby);
       }
-      if (button.disabled) {
-        continue;
+      if (input.parentElement) {
+        roots.push(input.parentElement);
       }
-      const className = typeof button.className === "string" ? button.className : "";
-      if (className.includes("disabled")) {
-        continue;
+    }
+    roots.push(document);
+
+    for (const root of roots) {
+      for (const selector of QWEN_SEND_BUTTON_SELECTORS) {
+        const buttons = Array.from(root.querySelectorAll(selector));
+        for (const button of buttons) {
+          if (!(button instanceof HTMLButtonElement)) {
+            continue;
+          }
+          if (button.disabled) {
+            continue;
+          }
+          const className = typeof button.className === "string" ? button.className : "";
+          if (className.includes("disabled")) {
+            continue;
+          }
+          const label = `${button.getAttribute("aria-label") ?? ""} ${button.title ?? ""} ${button.textContent ?? ""}`.toLowerCase();
+          if (/(copy|download|复制|下载)/.test(label)) {
+            continue;
+          }
+          return button;
+        }
       }
-      return button;
     }
     return null;
   }

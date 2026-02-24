@@ -24,15 +24,42 @@ let maskTimer: number | undefined;
 let busy = false;
 let processedBlocks = new WeakSet<HTMLElement>();
 let lastConversationId = adapter.conversationId();
+let pendingAutoSendTimer: number | undefined;
+let pendingAutoSendId: string | null = null;
+let pendingAutoSendRetries = 0;
+type DebugStage =
+  | "bootstrap"
+  | "scan.start"
+  | "scan.skip"
+  | "scan.candidate"
+  | "scan.parse"
+  | "scan.execute"
+  | "execute.result"
+  | "inject"
+  | "submit"
+  | "mask";
+type DebugEntry = {
+  ts: string;
+  stage: DebugStage;
+  site: string;
+  conversation: string;
+  detail: string;
+  data?: Record<string, unknown>;
+};
+const debugLog: DebugEntry[] = [];
+const MAX_DEBUG_LOG = 500;
 const executionLedger = new Set<string>();
 const executionOrder: string[] = [];
 const MAX_EXECUTION_LEDGER = 1500;
 const executionMeta = new Map<string, { method: string; tool?: string }>();
 const legacyNoticeConversations = new Set<string>();
+const DEBUG_BRIDGE_REQ = "flycode-debug-req";
+const DEBUG_BRIDGE_RES = "flycode-debug-res";
 
 void bootstrap();
 
 async function bootstrap(): Promise<void> {
+  pushDebug("bootstrap", "content script bootstrap", { site: adapter.id });
   await loadSettings();
   loadLedger();
 
@@ -43,6 +70,7 @@ async function bootstrap(): Promise<void> {
     },
     onStatus: (message, isError) => showFloatingStatus(message, isError)
   });
+  installPageDebugBridge();
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.flycodeSettings) {
@@ -73,11 +101,106 @@ async function bootstrap(): Promise<void> {
     scheduleScan(400);
     scheduleMask(300);
   }, 1500);
+  window.setInterval(() => {
+    tryPendingAutoSend();
+  }, 2000);
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      scheduleScan(80);
+      scheduleMask(80);
+      void tryPendingAutoSend();
+    }
+  });
+
+  window.addEventListener("focus", () => {
+    scheduleScan(80);
+    scheduleMask(80);
+    void tryPendingAutoSend();
+  });
 
   primeExistingRequests();
   scheduleScan(500);
   scheduleMask(700);
   installDebugApi();
+}
+
+type DebugBridgeMessage = {
+  channel: string;
+  id: string;
+  action: string;
+};
+
+function installPageDebugBridge(): void {
+  window.addEventListener("message", (event: MessageEvent<DebugBridgeMessage>) => {
+    if (event.source !== window || !event.data || event.data.channel !== DEBUG_BRIDGE_REQ) {
+      return;
+    }
+    const { id, action } = event.data;
+    void handleDebugBridgeAction(id, action);
+  });
+
+  const script = document.createElement("script");
+  script.src = chrome.runtime.getURL("page-debug-bridge.js");
+  script.async = false;
+  script.onload = () => script.remove();
+  (document.documentElement || document.head || document.body).appendChild(script);
+}
+
+async function handleDebugBridgeAction(id: string, action: string): Promise<void> {
+  try {
+    let result: unknown;
+    switch (action) {
+      case "getSettings":
+        result = { ...settings };
+        break;
+      case "runScan":
+        await runScan();
+        result = true;
+        break;
+      case "runMask":
+      case "runResultMask":
+        maskRenderedResponses();
+        result = true;
+        break;
+      case "getExecutionLedger":
+        result = [...executionOrder];
+        break;
+      case "getLogs":
+        result = [...debugLog];
+        break;
+      case "clearLogs":
+        debugLog.length = 0;
+        result = true;
+        break;
+      case "dump":
+        result = {
+          site: adapter.id,
+          conversationId: adapter.conversationId(),
+          hidden: document.hidden,
+          url: location.href,
+          settings,
+          executionLedgerSize: executionOrder.length,
+          pendingAutoSendId,
+          pendingAutoSendRetries,
+          logs: [...debugLog]
+        };
+        break;
+      default:
+        throw new Error(`Unsupported debug action: ${action}`);
+    }
+    window.postMessage({ channel: DEBUG_BRIDGE_RES, id, ok: true, result }, "*");
+  } catch (error) {
+    window.postMessage(
+      {
+        channel: DEBUG_BRIDGE_RES,
+        id,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error)
+      },
+      "*"
+    );
+  }
 }
 
 async function loadSettings(): Promise<void> {
@@ -130,7 +253,7 @@ function primeExistingRequests(): void {
     }
     processedBlocks.add(block.node);
     // Cold start replay guard: mark existing history as consumed.
-    rememberExecutionKey(buildExecutionKey(block.node, parsed.requestHash));
+    rememberExecutionKey(buildExecutionKey(block.node, parsed.requestHash, parsed.id));
   }
 }
 
@@ -143,140 +266,67 @@ async function runScan(): Promise<void> {
   busy = true;
   try {
     const blocks = adapter.collectAssistantBlocks();
-    const latest = pickLatestAssistantBlock(blocks);
-    if (!latest) {
-      return;
-    }
+    pushDebug("scan.start", "scan begin", { blockCount: blocks.length });
 
-    const block = latest;
-    if (processedBlocks.has(block.node)) {
-      return;
-    }
-
-    if (!shouldTryParseAsMcpRequest(block)) {
-      maybeEmitLegacyMigrationNotice(block);
-      processedBlocks.add(block.node);
-      return;
-    }
-
-    const parsed = parseMcpRequestBlock(block.text);
-    if (!parsed) {
-      if (!mayContainMcpCallText(block.text)) {
-        processedBlocks.add(block.node);
+    // Iterate from latest to oldest and execute at most one unresolved request.
+    for (let idx = blocks.length - 1; idx >= 0; idx -= 1) {
+      const block = blocks[idx];
+      if (!block || block.source === "user") {
+        continue;
       }
+      if (processedBlocks.has(block.node)) {
+        continue;
+      }
+      pushDebug("scan.candidate", "candidate block", {
+        index: idx,
+        kind: block.kind,
+        source: block.source,
+        textHead: block.text.slice(0, 120)
+      });
+
+      if (!shouldTryParseAsMcpRequest(block)) {
+        maybeEmitLegacyMigrationNotice(block);
+        processedBlocks.add(block.node);
+        continue;
+      }
+
+      const parsed = parseMcpRequestBlock(block.text);
+      if (!parsed) {
+        pushDebug("scan.parse", "parse failed", { index: idx });
+        if (!mayContainMcpCallText(block.text)) {
+          processedBlocks.add(block.node);
+        }
+        continue;
+      }
+      pushDebug("scan.parse", "parse ok", { id: parsed.id, method: parsed.envelope.method });
+
+      processedBlocks.add(block.node);
+
+      const executionKey = buildExecutionKey(block.node, parsed.requestHash, parsed.id);
+      if (executionLedger.has(executionKey)) {
+        pushDebug("scan.skip", "execution key already handled", { id: parsed.id });
+        continue;
+      }
+
+      rememberExecutionKey(executionKey);
+      executionMeta.set(parsed.id, {
+        method: parsed.envelope.method,
+        tool:
+          parsed.envelope.method === "tools/call" &&
+          parsed.envelope.params &&
+          typeof parsed.envelope.params === "object"
+            ? String((parsed.envelope.params as { name?: unknown }).name ?? "")
+            : undefined
+      });
+      pushDebug("scan.execute", "executing request", { id: parsed.id, method: parsed.envelope.method });
+      await executeMcpRequest(parsed.envelope);
       return;
     }
-
-    processedBlocks.add(block.node);
-
-    // Only process when this assistant request has no later user message.
-    if (hasUserMessageAfter(block.node)) {
-      return;
-    }
-
-    const knownResponseIds = collectKnownResponseIds(blocks);
-    if (knownResponseIds.has(parsed.id)) {
-      rememberExecutionKey(buildExecutionKey(block.node, parsed.requestHash));
-      return;
-    }
-
-    const executionKey = buildExecutionKey(block.node, parsed.requestHash);
-    if (executionLedger.has(executionKey)) {
-      return;
-    }
-
-    rememberExecutionKey(executionKey);
-    executionMeta.set(parsed.id, {
-      method: parsed.envelope.method,
-      tool:
-        parsed.envelope.method === "tools/call" &&
-        parsed.envelope.params &&
-        typeof parsed.envelope.params === "object"
-          ? String((parsed.envelope.params as { name?: unknown }).name ?? "")
-          : undefined
-    });
-    await executeMcpRequest(parsed.envelope);
+    pushDebug("scan.skip", "no executable mcp-request found");
   } finally {
     busy = false;
   }
 }
-
-function collectKnownResponseIds(blocks: AssistantBlock[]): Set<string> {
-  const out = new Set<string>();
-  for (const block of blocks) {
-    if (block.source === "user") {
-      continue;
-    }
-    const id = extractResponseIdFromBlock(block);
-    if (id) {
-      out.add(id);
-    }
-  }
-  return out;
-}
-
-function extractResponseIdFromBlock(block: AssistantBlock): string | null {
-  const parsed = parseMcpResponseSummary(block.text, block.kind);
-  if (parsed?.id) {
-    return parsed.id;
-  }
-
-  const raw = block.text;
-  if (block.kind !== "mcp-response" && !/mcp-response/i.test(raw)) {
-    return null;
-  }
-
-  const strId = raw.match(/"id"\s*:\s*"([^"\n\r]+)"/i);
-  if (strId?.[1]) {
-    return strId[1];
-  }
-  const numId = raw.match(/"id"\s*:\s*([0-9]+)/i);
-  if (numId?.[1]) {
-    return numId[1];
-  }
-  return null;
-}
-
-function pickLatestAssistantBlock(blocks: AssistantBlock[]): AssistantBlock | null {
-  for (let idx = blocks.length - 1; idx >= 0; idx -= 1) {
-    const block = blocks[idx];
-    if (block.source === "user") {
-      continue;
-    }
-    return block;
-  }
-  return null;
-}
-
-function hasUserMessageAfter(node: HTMLElement): boolean {
-  const selectors = USER_MESSAGE_SELECTORS_BY_SITE[adapter.id] ?? USER_MESSAGE_SELECTORS_BY_SITE.unknown;
-  const userNodes = new Set<HTMLElement>();
-  for (const selector of selectors) {
-    for (const candidate of Array.from(document.querySelectorAll(selector))) {
-      if (candidate instanceof HTMLElement) {
-        userNodes.add(candidate);
-      }
-    }
-  }
-
-  for (const userNode of userNodes) {
-    if (userNode === node || node.contains(userNode) || userNode.contains(node)) {
-      continue;
-    }
-    const relation = node.compareDocumentPosition(userNode);
-    if ((relation & Node.DOCUMENT_POSITION_FOLLOWING) !== 0) {
-      return true;
-    }
-  }
-  return false;
-}
-
-const USER_MESSAGE_SELECTORS_BY_SITE: Record<string, string[]> = {
-  qwen: [".qwen-chat-message-user", ".user-message-content"],
-  deepseek: ["._81e7b5e", ".ds-message--user", "[data-role='user']"],
-  gemini: ["[data-message-author-role='user']", ".user-query-content", ".user-message", ".chat-turn-user"],
-  unknown: ["[data-message-author-role='user']", ".user-message", ".chat-turn-user"]
-};
 
 function deriveBlockAnchor(node: HTMLElement): string {
   const anchors = [
@@ -323,46 +373,6 @@ function deriveBlockAnchor(node: HTMLElement): string {
   return `path:${pathParts.join(">")}`;
 }
 
-function hashText(value: string): string {
-  let hash = 2166136261;
-  for (let i = 0; i < value.length; i += 1) {
-    hash ^= value.charCodeAt(i);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(16).padStart(8, "0");
-}
-
-function safeTrimText(text: string): string {
-  const normalized = text.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n").trim();
-  if (normalized.length <= 200) {
-    return normalized;
-  }
-  return normalized.slice(0, 200);
-}
-
-function buildLatestUserAnchor(): string {
-  const selectors = USER_MESSAGE_SELECTORS_BY_SITE[adapter.id] ?? USER_MESSAGE_SELECTORS_BY_SITE.unknown;
-  let latest: HTMLElement | null = null;
-  for (const selector of selectors) {
-    for (const candidate of Array.from(document.querySelectorAll(selector))) {
-      if (!(candidate instanceof HTMLElement)) {
-        continue;
-      }
-      latest = candidate;
-    }
-  }
-  if (!latest) {
-    return "no-user-message";
-  }
-
-  const explicitId = latest.getAttribute("data-message-id") ?? latest.getAttribute("data-id") ?? latest.id;
-  if (explicitId) {
-    return `user-id:${explicitId}`;
-  }
-
-  return `user-hash:${hashText(safeTrimText(latest.textContent ?? ""))}`;
-}
-
 function shouldTryParseAsMcpRequest(block: AssistantBlock): boolean {
   if (block.source === "user") {
     return false;
@@ -373,7 +383,8 @@ function shouldTryParseAsMcpRequest(block: AssistantBlock): boolean {
   if (block.kind !== "unknown") {
     return false;
   }
-  return mayContainMcpCallText(block.text);
+  const normalized = block.text.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n").trim().toLowerCase();
+  return normalized.startsWith("```mcp-request") || normalized.startsWith("mcp-request");
 }
 
 function mayContainMcpCallText(text: string): boolean {
@@ -434,9 +445,11 @@ async function executeMcpRequest(envelope: McpRequestEnvelope): Promise<void> {
   })) as { ok: boolean; response?: McpResponseEnvelope; message?: string };
 
   if (!response?.ok || !response.response) {
+    pushDebug("execute.result", "mcp execute failed", { id: envelope.id, message: response?.message ?? "unknown" });
     await injectToInput(formatErrorResponse(envelope.id, response?.message ?? "MCP execute failed"));
     return;
   }
+  pushDebug("execute.result", "mcp execute success", { id: envelope.id });
 
   let finalResponse = response.response;
   const pendingId = getPendingConfirmationId(finalResponse);
@@ -526,8 +539,13 @@ function getPendingConfirmationId(response: McpResponseEnvelope): string | null 
 async function injectToInput(text: string): Promise<void> {
   const current = adapter.getCurrentText().trim();
   const next = current ? `${current}\n\n${text}` : text;
+  pushDebug("inject", "inject response to input", {
+    hasCurrentInput: Boolean(current),
+    textHead: text.slice(0, 120)
+  });
   const ok = adapter.injectText(next);
   if (!ok) {
+    pushDebug("inject", "inject failed: input not found");
     showFloatingStatus("未找到输入框，无法注入结果。", true);
     return;
   }
@@ -535,8 +553,17 @@ async function injectToInput(text: string): Promise<void> {
   if (settings.autoToolAutoSend) {
     await sleep(40);
     const outcome = await adapter.submitAuto();
+    pushDebug("submit", "submit outcome", {
+      ok: outcome.ok,
+      method: outcome.method,
+      attempts: outcome.attempts,
+      hidden: document.hidden
+    });
     if (!outcome.ok) {
+      markPendingAutoSend(next);
       showFloatingStatus("结果已注入输入框，但未自动发送，请手动点击发送。", true);
+    } else {
+      clearPendingAutoSend();
     }
   }
 
@@ -545,8 +572,77 @@ async function injectToInput(text: string): Promise<void> {
   scheduleMask(700);
 }
 
+function markPendingAutoSend(injectedText: string): void {
+  pendingAutoSendId = extractResponseId(injectedText);
+  pendingAutoSendRetries = 0;
+  schedulePendingAutoSendRetry(1800);
+}
+
+function clearPendingAutoSend(): void {
+  pendingAutoSendId = null;
+  pendingAutoSendRetries = 0;
+  if (pendingAutoSendTimer !== undefined) {
+    window.clearTimeout(pendingAutoSendTimer);
+    pendingAutoSendTimer = undefined;
+  }
+}
+
+function schedulePendingAutoSendRetry(delayMs: number): void {
+  if (pendingAutoSendTimer !== undefined) {
+    window.clearTimeout(pendingAutoSendTimer);
+  }
+  pendingAutoSendTimer = window.setTimeout(() => {
+    pendingAutoSendTimer = undefined;
+    void tryPendingAutoSend();
+  }, delayMs);
+}
+
+function extractResponseId(text: string): string | null {
+  const match = text.match(/"id"\s*:\s*"([^"\n\r]+)"/);
+  if (match?.[1]) {
+    return match[1];
+  }
+  return null;
+}
+
+function inputContainsPendingResponse(current: string): boolean {
+  const normalized = current.trim();
+  if (!normalized) {
+    return false;
+  }
+  if (!normalized.includes("mcp-response")) {
+    return false;
+  }
+  if (pendingAutoSendId && !normalized.includes(pendingAutoSendId)) {
+    return false;
+  }
+  return true;
+}
+
+async function tryPendingAutoSend(): Promise<void> {
+  if (!settings.autoToolAutoSend || !pendingAutoSendId) {
+    return;
+  }
+  const current = adapter.getCurrentText();
+  if (!inputContainsPendingResponse(current)) {
+    clearPendingAutoSend();
+    return;
+  }
+  const outcome = await adapter.submitAuto();
+  if (outcome.ok) {
+    clearPendingAutoSend();
+    return;
+  }
+
+  pendingAutoSendRetries += 1;
+  // Background tabs can be timer-throttled; keep retrying with bounded cadence.
+  const delay = Math.min(4000 + pendingAutoSendRetries * 400, 12000);
+  schedulePendingAutoSendRetry(delay);
+}
+
 function maskRenderedResponses(): void {
   const blocks = adapter.collectAssistantBlocks();
+  let masked = 0;
   for (const block of blocks) {
     if (block.node.getAttribute("data-flycode-masked") === "1") {
       continue;
@@ -556,6 +652,10 @@ function maskRenderedResponses(): void {
       continue;
     }
     adapter.applyMaskedSummary(block.node, summary);
+    masked += 1;
+  }
+  if (masked > 0) {
+    pushDebug("mask", "masked summary blocks", { masked });
   }
 }
 
@@ -613,11 +713,10 @@ function maybeResetForConversationChange(): void {
   executionMeta.clear();
 }
 
-function buildExecutionKey(node: HTMLElement, requestHash: string): string {
+function buildExecutionKey(node: HTMLElement, requestHash: string, requestId: string): string {
   const conversationId = normalizeConversationKey(lastConversationId || adapter.conversationId());
   const blockAnchor = deriveBlockAnchor(node);
-  const latestUserAnchor = buildLatestUserAnchor();
-  return `${conversationId}|${blockAnchor}|${latestUserAnchor}|${requestHash}`;
+  return `${conversationId}|${blockAnchor}|${requestId}|${requestHash}`;
 }
 
 function rememberExecutionKey(key: string): void {
@@ -680,10 +779,53 @@ function installDebugApi(): void {
     runScan: () => runScan(),
     runMask: () => maskRenderedResponses(),
     runResultMask: () => maskRenderedResponses(),
-    getExecutionLedger: () => [...executionOrder]
+    getExecutionLedger: () => [...executionOrder],
+    getLogs: () => [...debugLog],
+    clearLogs: () => {
+      debugLog.length = 0;
+    },
+    dump: () => {
+      const payload = {
+        site: adapter.id,
+        conversationId: adapter.conversationId(),
+        hidden: document.hidden,
+        url: location.href,
+        settings,
+        executionLedgerSize: executionOrder.length,
+        pendingAutoSendId,
+        pendingAutoSendRetries,
+        logs: [...debugLog]
+      };
+      try {
+        console.log("[flycode-debug]", payload);
+      } catch {
+        // ignore
+      }
+      return payload;
+    }
   };
 }
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function pushDebug(stage: DebugStage, detail: string, data?: Record<string, unknown>): void {
+  const entry: DebugEntry = {
+    ts: new Date().toISOString(),
+    stage,
+    site: adapter.id,
+    conversation: adapter.conversationId(),
+    detail,
+    data
+  };
+  debugLog.push(entry);
+  if (debugLog.length > MAX_DEBUG_LOG) {
+    debugLog.splice(0, debugLog.length - MAX_DEBUG_LOG);
+  }
+  try {
+    console.debug("[flycode]", entry);
+  } catch {
+    // ignore
+  }
 }

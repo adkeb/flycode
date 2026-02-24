@@ -75,6 +75,9 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
     let attempts = 0;
     const beforeText = this.getCurrentText();
     const beforeUserCount = document.querySelectorAll("._81e7b5e").length;
+    const hiddenTab = document.hidden;
+    const buttonWaitMs = hiddenTab ? 2600 : 520;
+    const enterWaitMs = hiddenTab ? 9000 : 1200;
 
     // Button first: avoid Enter introducing a newline and creating false-positive submit.
     const delays = [0, 80, 220];
@@ -88,7 +91,7 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
       }
       attempts += 1;
       button.click();
-      if (await this.waitForSubmitSignal(beforeUserCount, beforeText, 520)) {
+      if (await this.waitForSubmitSignal(beforeUserCount, beforeText, buttonWaitMs)) {
         return { ok: true, method: "button", attempts };
       }
     }
@@ -97,7 +100,7 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
     input.focus();
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
     input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
-    if (await this.waitForSubmitSignal(beforeUserCount, beforeText, 1200)) {
+    if (await this.waitForSubmitSignal(beforeUserCount, beforeText, enterWaitMs)) {
       return { ok: true, method: "enter", attempts };
     }
 
@@ -202,15 +205,39 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
   }
 
   private findEnabledSendButton(): HTMLButtonElement | null {
-    for (const selector of DEEPSEEK_SEND_BUTTON_SELECTORS) {
-      const button = document.querySelector(selector);
-      if (!(button instanceof HTMLButtonElement)) {
-        continue;
+    const input = this.findInput();
+    const roots: ParentNode[] = [];
+    if (input) {
+      const nearby = input.closest("form, .b13855df, .aaff8b8f, ._020ab5b, ._24fad49");
+      if (nearby) {
+        roots.push(nearby);
       }
-      if (button.disabled) {
-        continue;
+      if (input.parentElement) {
+        roots.push(input.parentElement);
       }
-      return button;
+    }
+    roots.push(document);
+
+    for (const root of roots) {
+      for (const selector of DEEPSEEK_SEND_BUTTON_SELECTORS) {
+        const nodes = Array.from(root.querySelectorAll(selector));
+        for (const node of nodes) {
+          if (!(node instanceof HTMLElement)) {
+            continue;
+          }
+          if (node.getAttribute("aria-disabled") === "true") {
+            continue;
+          }
+          const className = typeof node.className === "string" ? node.className : "";
+          if (className.includes("disabled")) {
+            continue;
+          }
+          if (node instanceof HTMLButtonElement && node.disabled) {
+            continue;
+          }
+          return node as unknown as HTMLButtonElement;
+        }
+      }
     }
     return null;
   }
@@ -253,10 +280,22 @@ export function createDeepSeekAdapter(): SiteAdapter {
 }
 
 function resolveBlockSource(node: HTMLElement): AssistantBlockSource {
-  if (node.closest("._81e7b5e") && !node.closest(".ds-message")) {
+  if (
+    node.closest(".ds-message, .ds-message--assistant, [data-role='assistant'], [data-message-author-role='assistant'], .assistant-message")
+  ) {
+    return "assistant";
+  }
+  if (
+    node.closest(".ds-message--user, [data-role='user'], [data-message-author-role='user'], .user-message")
+  ) {
     return "user";
   }
-  if (node.closest(".ds-message")) {
+  const legacyBubble = node.closest("._81e7b5e");
+  if (legacyBubble instanceof HTMLElement) {
+    const className = legacyBubble.className || "";
+    if (className.includes("_19d617c") || /\buser\b/i.test(className)) {
+      return "user";
+    }
     return "assistant";
   }
   return "unknown";

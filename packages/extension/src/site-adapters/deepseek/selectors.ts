@@ -17,8 +17,10 @@ export const DEEPSEEK_SEND_BUTTON_SELECTORS = [
   "button[data-testid='send-button']",
   "button[aria-label*='Send']",
   "button[aria-label*='发送']",
+  "div._7436101[role='button']",
   ".b13855df button:not([disabled])",
-  "button._7436101:not([disabled])"
+  "button._7436101:not([disabled])",
+  ".b13855df [role='button'][aria-disabled='false']"
 ];
 
 export const DEEPSEEK_ASSISTANT_BLOCK_SELECTORS = [

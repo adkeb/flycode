@@ -27,6 +27,17 @@
       "run_at": "document_idle"
     }
   ],
+  "web_accessible_resources": [
+    {
+      "resources": ["page-debug-bridge.js"],
+      "matches": [
+        "*://chat.qwen.ai/*",
+        "*://www.deepseek.com/*",
+        "*://chat.deepseek.com/*",
+        "*://gemini.google.com/*"
+      ]
+    }
+  ],
   "options_page": "options.html",
   "action": {
     "default_title": "FlyCode"
