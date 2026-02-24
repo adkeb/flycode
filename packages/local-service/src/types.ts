@@ -67,8 +67,12 @@
  * 这些类型在浏览器扩展和本地服务之间通用
  */
 import type {
+  ConsoleClearRequest,
+  ConsoleClearResult,
   ConfirmationEntry,      // 确认条目（确认中心使用）
   ConsoleEventEntry,      // 控制台事件条目（日志使用）
+  PolicyRuntimePatch,
+  PolicyValidationResult,
   ReadEncoding,           // 读取编码："utf-8" | "base64" | "hex"
   SiteId,                 // 站点 ID："qwen" | "deepseek" | "gemini" | "unknown"
   SiteKeysResponse,       // 站点密钥响应
@@ -330,6 +334,9 @@ export interface ServiceContext {
 
   /** 应用配置管理器（主题、偏好等） */
   appConfigManager: AppConfigManager;
+
+  /** 运行时策略管理器（支持热更新） */
+  policyRuntimeManager: PolicyRuntimeManager;
 
   /** 路径策略检查器（路径白名单验证） */
   pathPolicy: PathPolicy;
@@ -820,6 +827,20 @@ export interface ConsoleEventLogger {
 
   /** 清理过期日志 */
   cleanupExpired(retentionDays: number): Promise<void>;
+
+  /** 导出日志（可按筛选导出） */
+  exportRecent(input?: {
+    site?: SiteId | "all";
+    status?: "success" | "failed" | "pending" | "all";
+    tool?: string;
+    keyword?: string;
+    from?: string;
+    to?: string;
+    limit?: number;
+  }): Promise<ConsoleEventEntry[]>;
+
+  /** 清空日志（全部或按筛选） */
+  clear(input: ConsoleClearRequest): Promise<ConsoleClearResult>;
 }
 
 /**
@@ -883,6 +904,17 @@ export interface AppConfigManager {
 
   /** 更新 alwaysAllow 配置 */
   updateAlwaysAllow(site: Exclude<SiteId, "unknown">, tool: string, allow: boolean): Promise<AppConfigData>;
+}
+
+export interface PolicyRuntimeManager {
+  /** 获取当前运行时策略 */
+  getRuntime(): PolicyConfig;
+
+  /** 校验策略 patch */
+  validatePatch(patch: PolicyRuntimePatch): PolicyValidationResult;
+
+  /** 应用策略 patch（落盘并返回新策略） */
+  applyPatch(patch: PolicyRuntimePatch): Promise<PolicyConfig>;
 }
 
 // =============================================================================

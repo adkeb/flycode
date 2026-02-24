@@ -1,0 +1,31 @@
+:root {
+  --flycode-font-sans: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "Source Han Sans SC", "SimHei", "SimSun", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --flycode-font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+}
+
+html,
+body,
+#root {
+  font-family: var(--flycode-font-sans);
+}
+
+.mantine-AppShell-root,
+.mantine-Text-root,
+.mantine-Title-root,
+.mantine-Button-root,
+.mantine-Input-input,
+.mantine-Select-input,
+.mantine-Select-option,
+.mantine-Badge-root,
+.mantine-Card-root,
+.mantine-Accordion-item,
+.mantine-Accordion-control,
+.mantine-Accordion-panel {
+  font-family: var(--flycode-font-sans);
+}
+
+code,
+pre,
+.mantine-Code-root {
+  font-family: var(--flycode-font-mono);
+}

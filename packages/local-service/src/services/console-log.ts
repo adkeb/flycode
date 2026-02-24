@@ -4,7 +4,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { ConsoleEventEntry } from "@flycode/shared-types";
+import type { ConsoleClearRequest, ConsoleClearResult, ConsoleEventEntry, ConsoleQueryRequest } from "@flycode/shared-types";
 import { getFlycodeHomeDir } from "../config/policy.js";
 import type { ConsoleEventLogger } from "../types.js";
 
@@ -44,8 +44,7 @@ export class FileConsoleEventLogger implements ConsoleEventLogger {
     }
 
     const limit = clampLimit(input?.limit ?? DEFAULT_LIMIT);
-    const fromTs = input?.from ? Date.parse(input.from) : Number.NEGATIVE_INFINITY;
-    const toTs = input?.to ? Date.parse(input.to) : Number.POSITIVE_INFINITY;
+    const matcher = buildMatcher(input);
 
     const out: ConsoleEventEntry[] = [];
     for (const file of files.reverse()) {
@@ -59,30 +58,7 @@ export class FileConsoleEventLogger implements ConsoleEventLogger {
           continue;
         }
 
-        const ts = Date.parse(parsed.timestamp);
-        if (Number.isFinite(fromTs) && ts < fromTs) {
-          continue;
-        }
-        if (Number.isFinite(toTs) && ts > toTs) {
-          continue;
-        }
-
-        if (input?.site && input.site !== "all" && parsed.site !== input.site) {
-          continue;
-        }
-        if (input?.status && input.status !== "all" && parsed.status !== input.status) {
-          continue;
-        }
-        if (input?.tool && parsed.tool !== input.tool) {
-          continue;
-        }
-        if (input?.keyword) {
-          const needle = input.keyword.toLowerCase();
-          const haystack = JSON.stringify(parsed).toLowerCase();
-          if (!haystack.includes(needle)) {
-            continue;
-          }
-        }
+        if (!matcher(parsed)) continue;
 
         out.push(parsed);
         if (out.length >= limit) {
@@ -121,6 +97,67 @@ export class FileConsoleEventLogger implements ConsoleEventLogger {
       await fs.rm(path.join(dir, file), { force: true });
     }
   }
+
+  async exportRecent(input?: ConsoleQueryRequest): Promise<ConsoleEventEntry[]> {
+    return this.listRecent(input);
+  }
+
+  async clear(input: ConsoleClearRequest): Promise<ConsoleClearResult> {
+    const dir = path.join(getFlycodeHomeDir(), "console");
+    let files: string[] = [];
+    try {
+      files = (await fs.readdir(dir))
+        .filter((name) => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(name))
+        .sort();
+    } catch (error: unknown) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        return { deleted: 0 };
+      }
+      throw error;
+    }
+
+    if (input.mode === "all") {
+      let deleted = 0;
+      for (const file of files) {
+        const fullPath = path.join(dir, file);
+        const raw = await fs.readFile(fullPath, "utf8");
+        deleted += raw.split(/\r?\n/).filter(Boolean).length;
+        await fs.rm(fullPath, { force: true });
+      }
+      return { deleted };
+    }
+
+    const matcher = buildMatcher(input.filters ?? {});
+    let deleted = 0;
+
+    for (const file of files) {
+      const fullPath = path.join(dir, file);
+      const raw = await fs.readFile(fullPath, "utf8");
+      const lines = raw.split(/\r?\n/).filter(Boolean);
+      const kept: string[] = [];
+
+      for (const line of lines) {
+        const parsed = safeParseJson(line);
+        if (!parsed) {
+          kept.push(line);
+          continue;
+        }
+        if (matcher(parsed)) {
+          deleted += 1;
+          continue;
+        }
+        kept.push(line);
+      }
+
+      if (kept.length === 0) {
+        await fs.rm(fullPath, { force: true });
+      } else {
+        await fs.writeFile(fullPath, `${kept.join("\n")}\n`, "utf8");
+      }
+    }
+
+    return { deleted };
+  }
 }
 
 function safeParseJson(line: string): ConsoleEventEntry | null {
@@ -151,3 +188,25 @@ function clampLimit(limit: number): number {
   return Math.max(1, Math.min(MAX_LIMIT, Math.floor(limit)));
 }
 
+function buildMatcher(input?: ConsoleQueryRequest): (entry: ConsoleEventEntry) => boolean {
+  const fromTs = input?.from ? Date.parse(input.from) : Number.NEGATIVE_INFINITY;
+  const toTs = input?.to ? Date.parse(input.to) : Number.POSITIVE_INFINITY;
+  const keyword = input?.keyword?.toLowerCase();
+  const site = input?.site;
+  const status = input?.status;
+  const tool = input?.tool;
+
+  return (entry: ConsoleEventEntry) => {
+    const ts = Date.parse(entry.timestamp);
+    if (Number.isFinite(fromTs) && ts < fromTs) return false;
+    if (Number.isFinite(toTs) && ts > toTs) return false;
+    if (site && site !== "all" && entry.site !== site) return false;
+    if (status && status !== "all" && entry.status !== status) return false;
+    if (tool && entry.tool !== tool) return false;
+    if (keyword) {
+      const haystack = JSON.stringify(entry).toLowerCase();
+      if (!haystack.includes(keyword)) return false;
+    }
+    return true;
+  };
+}

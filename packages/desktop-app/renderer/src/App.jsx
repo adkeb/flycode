@@ -6,7 +6,6 @@ import {
   Box,
   Button,
   Card,
-  Code,
   Group,
   Loader,
   MantineProvider,
@@ -26,9 +25,27 @@ const CONFIRMATION_REQUIRED_TOOLS = ["fs.write", "fs.writeBatch", "fs.rm", "fs.m
 
 export default function App() {
   const [health, setHealth] = useState(null);
+  const [healthConnected, setHealthConnected] = useState(false);
+  const [healthCheckedAt, setHealthCheckedAt] = useState("");
+  const [healthError, setHealthError] = useState("");
+
   const [confirmations, setConfirmations] = useState([]);
   const [siteKeys, setSiteKeys] = useState(null);
   const [events, setEvents] = useState([]);
+  const [policyRuntime, setPolicyRuntime] = useState({
+    allowed_roots: [],
+    process: {
+      allowed_commands: [],
+      allowed_cwds: []
+    }
+  });
+
+  const [rootInput, setRootInput] = useState("");
+  const [commandInput, setCommandInput] = useState("");
+  const [cwdInput, setCwdInput] = useState("");
+
+  const [siteAdvancedOpen, setSiteAdvancedOpen] = useState({});
+
   const [appConfig, setAppConfig] = useState({
     theme: "system",
     logRetentionDays: 30,
@@ -55,13 +72,27 @@ export default function App() {
   const refreshAll = useCallback(async () => {
     setBusy(true);
     setError("");
-    try {
-      await Promise.all([loadHealth(), loadConfirmations(), loadSiteKeys(), loadConsole(), loadAppConfig()]);
-    } catch (err) {
-      setError((err).message);
-    } finally {
-      setBusy(false);
+
+    const settled = await Promise.allSettled([
+      loadHealth(),
+      loadConfirmations(),
+      loadSiteKeys(),
+      loadConsole(),
+      loadAppConfig(),
+      loadPolicyRuntime()
+    ]);
+
+    const rejected = settled.filter((item) => item.status === "rejected");
+    if (rejected.length > 0) {
+      setError(
+        rejected
+          .map((item) => String(item.reason?.message ?? item.reason ?? "未知错误"))
+          .slice(0, 3)
+          .join("; ")
+      );
     }
+
+    setBusy(false);
   }, [filters.keyword, filters.site, filters.status, filters.tool]);
 
   useEffect(() => {
@@ -72,13 +103,24 @@ export default function App() {
     const timer = window.setInterval(() => {
       void loadConfirmations();
       void loadConsole();
+      void loadHealth();
     }, 2500);
     return () => window.clearInterval(timer);
   }, [filters.keyword, filters.site, filters.status, filters.tool]);
 
   async function loadHealth() {
-    const value = await getJson("/v1/health");
-    setHealth(value);
+    try {
+      const value = await getJson("/v1/health");
+      setHealth(value);
+      setHealthConnected(true);
+      setHealthError("");
+      setHealthCheckedAt(new Date().toISOString());
+    } catch (err) {
+      setHealthConnected(false);
+      setHealthError(String(err?.message ?? err ?? "服务不可达"));
+      setHealthCheckedAt(new Date().toISOString());
+      throw err;
+    }
   }
 
   async function loadConfirmations() {
@@ -102,14 +144,33 @@ export default function App() {
     }));
   }
 
-  async function loadConsole() {
+  async function loadPolicyRuntime() {
+    const value = await getJson("/v1/policy/runtime");
+    const data = value?.data;
+    if (!data || typeof data !== "object") {
+      return;
+    }
+    setPolicyRuntime({
+      allowed_roots: Array.isArray(data.allowed_roots) ? data.allowed_roots : [],
+      process: {
+        allowed_commands: Array.isArray(data.process?.allowed_commands) ? data.process.allowed_commands : [],
+        allowed_cwds: Array.isArray(data.process?.allowed_cwds) ? data.process.allowed_cwds : []
+      }
+    });
+  }
+
+  function buildConsoleSearch(filtersValue = filters) {
     const search = new URLSearchParams();
     search.set("limit", "240");
-    if (filters.site) search.set("site", filters.site);
-    if (filters.status) search.set("status", filters.status);
-    if (filters.tool.trim()) search.set("tool", filters.tool.trim());
-    if (filters.keyword.trim()) search.set("keyword", filters.keyword.trim());
+    if (filtersValue.site) search.set("site", filtersValue.site);
+    if (filtersValue.status) search.set("status", filtersValue.status);
+    if (filtersValue.tool.trim()) search.set("tool", filtersValue.tool.trim());
+    if (filtersValue.keyword.trim()) search.set("keyword", filtersValue.keyword.trim());
+    return search;
+  }
 
+  async function loadConsole() {
+    const search = buildConsoleSearch();
     const value = await getJson(`/v1/console/events?${search.toString()}`);
     setEvents(Array.isArray(value?.data) ? value.data : []);
   }
@@ -121,6 +182,28 @@ export default function App() {
     });
     setAppConfig(saved.data);
     setNotice("配置已保存。");
+  }
+
+  async function validateAndSavePolicyRuntime() {
+    const patch = {
+      allowed_roots: policyRuntime.allowed_roots,
+      process: {
+        allowed_commands: policyRuntime.process.allowed_commands,
+        allowed_cwds: policyRuntime.process.allowed_cwds
+      }
+    };
+
+    const validation = await postJson("/v1/policy/runtime/validate", patch);
+    const result = validation?.data;
+    if (!result?.ok) {
+      const detail = (result?.errors ?? []).map((item) => `${item.field}: ${item.message}`).join("; ") || "校验失败";
+      setError(detail);
+      return;
+    }
+
+    await postJson("/v1/policy/runtime", patch);
+    setNotice("策略已热更新生效。");
+    await loadPolicyRuntime();
   }
 
   async function rotateKey(siteId) {
@@ -171,6 +254,119 @@ export default function App() {
     });
     await loadConfirmations();
     setNotice(`确认 ${approved ? "通过" : "拒绝"}：${confirmationId}`);
+  }
+
+  function addPolicyRoot() {
+    const value = rootInput.trim();
+    if (!value) return;
+    if (policyRuntime.allowed_roots.includes(value)) {
+      setRootInput("");
+      return;
+    }
+    setPolicyRuntime((prev) => ({
+      ...prev,
+      allowed_roots: [...prev.allowed_roots, value]
+    }));
+    setRootInput("");
+  }
+
+  function removePolicyRoot(target) {
+    setPolicyRuntime((prev) => ({
+      ...prev,
+      allowed_roots: prev.allowed_roots.filter((item) => item !== target)
+    }));
+  }
+
+  function addAllowedCommand() {
+    const value = commandInput.trim();
+    if (!value) return;
+    if (policyRuntime.process.allowed_commands.includes(value)) {
+      setCommandInput("");
+      return;
+    }
+    setPolicyRuntime((prev) => ({
+      ...prev,
+      process: {
+        ...prev.process,
+        allowed_commands: [...prev.process.allowed_commands, value]
+      }
+    }));
+    setCommandInput("");
+  }
+
+  function removeAllowedCommand(target) {
+    setPolicyRuntime((prev) => ({
+      ...prev,
+      process: {
+        ...prev.process,
+        allowed_commands: prev.process.allowed_commands.filter((item) => item !== target)
+      }
+    }));
+  }
+
+  function addAllowedCwd() {
+    const value = cwdInput.trim();
+    if (!value) return;
+    if (policyRuntime.process.allowed_cwds.includes(value)) {
+      setCwdInput("");
+      return;
+    }
+    setPolicyRuntime((prev) => ({
+      ...prev,
+      process: {
+        ...prev.process,
+        allowed_cwds: [...prev.process.allowed_cwds, value]
+      }
+    }));
+    setCwdInput("");
+  }
+
+  function removeAllowedCwd(target) {
+    setPolicyRuntime((prev) => ({
+      ...prev,
+      process: {
+        ...prev.process,
+        allowed_cwds: prev.process.allowed_cwds.filter((item) => item !== target)
+      }
+    }));
+  }
+
+  async function exportConsoleEvents() {
+    const search = buildConsoleSearch(filters);
+    const value = await getJson(`/v1/console/export?${search.toString()}`);
+    const rows = Array.isArray(value?.data) ? value.data : [];
+    const blob = new Blob([JSON.stringify(rows, null, 2)], { type: "application/json;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `flycode-console-${new Date().toISOString().replaceAll(":", "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setNotice(`已导出 ${rows.length} 条日志。`);
+  }
+
+  async function clearConsoleEvents() {
+    const choice = window.prompt("清空日志：输入 1 清空当前筛选，输入 2 清空全部，其他取消", "1");
+    if (choice !== "1" && choice !== "2") {
+      return;
+    }
+    const body =
+      choice === "1"
+        ? {
+            mode: "filtered",
+            filters: {
+              site: filters.site,
+              status: filters.status,
+              tool: filters.tool,
+              keyword: filters.keyword
+            }
+          }
+        : { mode: "all" };
+
+    const value = await postJson("/v1/console/clear", body);
+    const deleted = Number(value?.data?.deleted ?? 0);
+    setNotice(`已清空 ${deleted} 条日志。`);
+    await loadConsole();
   }
 
   return (
@@ -224,7 +420,21 @@ export default function App() {
                   <IconShieldCheck size={16} />
                   <Title order={4}>服务状态</Title>
                 </Group>
-                {!health ? <Loader size="sm" /> : <Code block>{JSON.stringify(health, null, 2)}</Code>}
+                <Group justify="space-between" align="center">
+                  <Group gap="xs">
+                    <Badge color={healthConnected ? "green" : "red"} variant="filled">
+                      {healthConnected ? "正在工作" : "断开连接"}
+                    </Badge>
+                    {!healthConnected && healthError ? (
+                      <Text size="xs" c="red">
+                        {healthError}
+                      </Text>
+                    ) : null}
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {healthCheckedAt ? `最近检查: ${new Date(healthCheckedAt).toLocaleString()}` : "未检查"}
+                  </Text>
+                </Group>
               </Card>
 
               <Card withBorder>
@@ -275,6 +485,100 @@ export default function App() {
               </Card>
             </SimpleGrid>
 
+            <Card withBorder>
+              <Title order={4} mb="sm">
+                策略管理
+              </Title>
+              <SimpleGrid cols={{ base: 1, md: 3 }}>
+                <Card withBorder p="sm">
+                  <Text fw={600} size="sm" mb="xs">
+                    允许目录 (allowed_roots)
+                  </Text>
+                  <Group mb="xs">
+                    <TextInput
+                      placeholder="输入绝对路径"
+                      value={rootInput}
+                      onChange={(event) => setRootInput(event.currentTarget.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <Button size="xs" onClick={addPolicyRoot}>
+                      新增
+                    </Button>
+                  </Group>
+                  <Stack gap={4}>
+                    {policyRuntime.allowed_roots.map((item) => (
+                      <Group key={item} justify="space-between">
+                        <Text size="xs">{item}</Text>
+                        <Button size="compact-xs" color="red" variant="light" onClick={() => removePolicyRoot(item)}>
+                          删除
+                        </Button>
+                      </Group>
+                    ))}
+                  </Stack>
+                </Card>
+
+                <Card withBorder p="sm">
+                  <Text fw={600} size="sm" mb="xs">
+                    命令白名单 (allowed_commands)
+                  </Text>
+                  <Group mb="xs">
+                    <TextInput
+                      placeholder="如 npm / node / git"
+                      value={commandInput}
+                      onChange={(event) => setCommandInput(event.currentTarget.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <Button size="xs" onClick={addAllowedCommand}>
+                      新增
+                    </Button>
+                  </Group>
+                  <Stack gap={4}>
+                    {policyRuntime.process.allowed_commands.map((item) => (
+                      <Group key={item} justify="space-between">
+                        <Text size="xs">{item}</Text>
+                        <Button size="compact-xs" color="red" variant="light" onClick={() => removeAllowedCommand(item)}>
+                          删除
+                        </Button>
+                      </Group>
+                    ))}
+                  </Stack>
+                </Card>
+
+                <Card withBorder p="sm">
+                  <Text fw={600} size="sm" mb="xs">
+                    命令工作目录 (allowed_cwds)
+                  </Text>
+                  <Group mb="xs">
+                    <TextInput
+                      placeholder="输入绝对路径"
+                      value={cwdInput}
+                      onChange={(event) => setCwdInput(event.currentTarget.value)}
+                      style={{ flex: 1 }}
+                    />
+                    <Button size="xs" onClick={addAllowedCwd}>
+                      新增
+                    </Button>
+                  </Group>
+                  <Stack gap={4}>
+                    {policyRuntime.process.allowed_cwds.map((item) => (
+                      <Group key={item} justify="space-between">
+                        <Text size="xs">{item}</Text>
+                        <Button size="compact-xs" color="red" variant="light" onClick={() => removeAllowedCwd(item)}>
+                          删除
+                        </Button>
+                      </Group>
+                    ))}
+                  </Stack>
+                </Card>
+              </SimpleGrid>
+
+              <Group justify="flex-end" mt="sm">
+                <Button size="xs" onClick={() => void validateAndSavePolicyRuntime()}>
+                  保存并热更新
+                </Button>
+              </Group>
+            </Card>
+
             <SimpleGrid cols={{ base: 1, md: 2 }}>
               <Card withBorder>
                 <Title order={4} mb="sm">
@@ -298,7 +602,7 @@ export default function App() {
                           {item.summary}
                         </Text>
                         <Text size="xs" c="dimmed" mt={4}>
-                          {item.createdAt}
+                          {new Date(item.createdAt).toLocaleString()}
                         </Text>
                         {item.status === "pending" ? (
                           <Group mt="xs">
@@ -326,6 +630,7 @@ export default function App() {
                 <Stack gap="xs">
                   {MANAGED_SITES.map((site) => {
                     const row = siteKeys?.sites?.[site];
+                    const advancedOpen = siteAdvancedOpen[site] === true;
                     return (
                       <Card key={site} withBorder p="sm">
                         <Group justify="space-between" mb={6}>
@@ -334,9 +639,11 @@ export default function App() {
                             轮换
                           </Button>
                         </Group>
-                        <Code block>{row?.key ?? "(empty)"}</Code>
+                        <Text size="xs" c="dimmed">
+                          key: {row?.key ?? "(empty)"}
+                        </Text>
                         <Text size="xs" c="dimmed" mt={4}>
-                          rotated: {row?.rotatedAt ?? "-"}
+                          rotated: {row?.rotatedAt ? new Date(row.rotatedAt).toLocaleString() : "-"}
                         </Text>
                         <Box mt="sm">
                           <Switch
@@ -346,17 +653,36 @@ export default function App() {
                             onChange={(event) => void setSiteAllAlwaysAllow(site, event.currentTarget.checked)}
                           />
                         </Box>
-                        <Stack gap={6} mt="xs">
-                          {CONFIRMATION_REQUIRED_TOOLS.map((tool) => (
-                            <Switch
-                              key={`${site}:${tool}`}
-                              size="xs"
-                              label={`${tool} 免确认`}
-                              checked={toolAlwaysAllowEnabled(site, tool)}
-                              onChange={(event) => void setSiteToolAlwaysAllow(site, tool, event.currentTarget.checked)}
-                            />
-                          ))}
-                        </Stack>
+                        <Group mt="xs" justify="space-between">
+                          <Text size="xs" c="dimmed">
+                            高级设置
+                          </Text>
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            onClick={() =>
+                              setSiteAdvancedOpen((prev) => ({
+                                ...prev,
+                                [site]: !prev[site]
+                              }))
+                            }
+                          >
+                            {advancedOpen ? "收起" : "展开"}
+                          </Button>
+                        </Group>
+                        {advancedOpen ? (
+                          <Stack gap={6} mt="xs">
+                            {CONFIRMATION_REQUIRED_TOOLS.map((tool) => (
+                              <Switch
+                                key={`${site}:${tool}`}
+                                size="xs"
+                                label={`${tool} 免确认`}
+                                checked={toolAlwaysAllowEnabled(site, tool)}
+                                onChange={(event) => void setSiteToolAlwaysAllow(site, tool, event.currentTarget.checked)}
+                              />
+                            ))}
+                          </Stack>
+                        ) : null}
                       </Card>
                     );
                   })}
@@ -408,6 +734,12 @@ export default function App() {
                 <Button size="xs" variant="light" onClick={() => void loadConsole()}>
                   应用过滤
                 </Button>
+                <Button size="xs" variant="light" onClick={() => void exportConsoleEvents()}>
+                  导出当前筛选
+                </Button>
+                <Button size="xs" color="red" variant="light" onClick={() => void clearConsoleEvents()}>
+                  清空日志
+                </Button>
               </Group>
 
               {events.length === 0 ? (
@@ -428,6 +760,9 @@ export default function App() {
                             <Badge color={statusColor(event.status)} variant="light">
                               {event.status}
                             </Badge>
+                            <Badge color={ageColor(event.timestamp)} variant="light">
+                              {new Date(event.timestamp).toLocaleString()}
+                            </Badge>
                             <Text size="xs" c="dimmed">
                               {event.site} · {event.durationMs ?? "-"}ms
                             </Text>
@@ -436,9 +771,6 @@ export default function App() {
                       </Accordion.Control>
                       <Accordion.Panel>
                         <Box>
-                          <Text size="xs" c="dimmed" mb={6}>
-                            {event.timestamp}
-                          </Text>
                           {event.status === "pending" && getPendingConfirmationIdFromEvent(event) ? (
                             <Card withBorder p="sm" mb="sm">
                               <Stack gap={8}>
@@ -475,7 +807,9 @@ export default function App() {
                               </Stack>
                             </Card>
                           ) : null}
-                          <Code block>{JSON.stringify({ request: event.request, response: event.response }, null, 2)}</Code>
+                          <pre style={{ margin: 0, overflowX: "auto", whiteSpace: "pre-wrap", fontSize: 12 }}>
+                            {JSON.stringify({ request: event.request, response: event.response }, null, 2)}
+                          </pre>
                         </Box>
                       </Accordion.Panel>
                     </Accordion.Item>
@@ -529,6 +863,17 @@ async function postJson(pathValue, body) {
 function statusColor(status) {
   if (status === "success" || status === "approved") return "green";
   if (status === "pending") return "blue";
+  return "red";
+}
+
+function ageColor(timestamp) {
+  const ts = Date.parse(timestamp);
+  if (!Number.isFinite(ts)) {
+    return "gray";
+  }
+  const age = Date.now() - ts;
+  if (age <= 5 * 60 * 1000) return "green";
+  if (age <= 24 * 60 * 60 * 1000) return "yellow";
   return "red";
 }
 

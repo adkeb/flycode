@@ -11,6 +11,7 @@ import { InMemoryConfirmationManager } from "./services/confirmation-center.js";
 import { FileConsoleEventLogger } from "./services/console-log.js";
 import { DefaultFileService } from "./services/file-service.js";
 import { DefaultPathPolicy } from "./services/path-policy.js";
+import { InMemoryPolicyRuntimeManager } from "./services/policy-runtime-manager.js";
 import { DefaultProcessRunner } from "./services/process-runner.js";
 import { DefaultRedactor } from "./services/redactor.js";
 import { InMemoryWriteBatchManager } from "./services/write-batch-manager.js";
@@ -18,25 +19,25 @@ import { InMemoryWriteManager } from "./services/write-manager.js";
 import type { ServiceContext } from "./types.js";
 
 export async function createServiceContext(): Promise<ServiceContext> {
-  const policy = await loadPolicyConfig();
+  let policy = await loadPolicyConfig();
   const pairCodeManager = new InMemoryPairCodeManager(policy.auth.pair_code_ttl_minutes);
   const tokenManager = new FileTokenManager(policy.auth.token_ttl_days);
   const siteKeyManager = new FileSiteKeyManager();
   await siteKeyManager.ensureSiteKeys();
   const appConfigManager = new JsonAppConfigManager();
   const appConfig = await appConfigManager.load();
-  const pathPolicy = new DefaultPathPolicy(policy);
-  const redactor = new DefaultRedactor(policy);
+  let pathPolicy = new DefaultPathPolicy(policy);
+  let redactor = new DefaultRedactor(policy);
   const auditLogger = new FileAuditLogger();
   const consoleEventLogger = new FileConsoleEventLogger();
   await consoleEventLogger.cleanupExpired(appConfig.logRetentionDays);
   const confirmationManager = new InMemoryConfirmationManager(appConfigManager);
-  const fileService = new DefaultFileService(policy, pathPolicy, redactor);
-  const writeManager = new InMemoryWriteManager(policy, pathPolicy, fileService);
-  const writeBatchManager = new InMemoryWriteBatchManager(policy, pathPolicy, fileService);
-  const processRunner = new DefaultProcessRunner(policy, pathPolicy, redactor);
+  let fileService = new DefaultFileService(policy, pathPolicy, redactor);
+  let writeManager = new InMemoryWriteManager(policy, pathPolicy, fileService);
+  let writeBatchManager = new InMemoryWriteBatchManager(policy, pathPolicy, fileService);
+  let processRunner = new DefaultProcessRunner(policy, pathPolicy, redactor);
 
-  return {
+  const context: ServiceContext = {
     policy,
     pairCodeManager,
     tokenManager,
@@ -44,6 +45,23 @@ export async function createServiceContext(): Promise<ServiceContext> {
     confirmationManager,
     consoleEventLogger,
     appConfigManager,
+    policyRuntimeManager: new InMemoryPolicyRuntimeManager(policy, async (nextPolicy) => {
+      policy = nextPolicy;
+      pathPolicy = new DefaultPathPolicy(policy);
+      redactor = new DefaultRedactor(policy);
+      fileService = new DefaultFileService(policy, pathPolicy, redactor);
+      writeManager = new InMemoryWriteManager(policy, pathPolicy, fileService);
+      writeBatchManager = new InMemoryWriteBatchManager(policy, pathPolicy, fileService);
+      processRunner = new DefaultProcessRunner(policy, pathPolicy, redactor);
+
+      context.policy = policy;
+      context.pathPolicy = pathPolicy;
+      context.redactor = redactor;
+      context.fileService = fileService;
+      context.writeManager = writeManager;
+      context.writeBatchManager = writeBatchManager;
+      context.processRunner = processRunner;
+    }),
     pathPolicy,
     redactor,
     auditLogger,
@@ -52,4 +70,6 @@ export async function createServiceContext(): Promise<ServiceContext> {
     writeBatchManager,
     processRunner
   };
+
+  return context;
 }

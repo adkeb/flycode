@@ -1397,6 +1397,44 @@ export interface ConsoleQueryRequest {
 }
 
 /**
+ * Runtime policy patch payload accepted by desktop app.
+ * Only mutable safe subsets are exposed to UI.
+ */
+export interface PolicyRuntimePatch {
+  allowed_roots?: string[];
+  process?: {
+    allowed_commands?: string[];
+    allowed_cwds?: string[];
+  };
+}
+
+/**
+ * Field-level validation result for runtime policy patch.
+ */
+export interface PolicyValidationResult {
+  ok: boolean;
+  errors: Array<{
+    field: string;
+    message: string;
+  }>;
+}
+
+/**
+ * Console clear request used by desktop app.
+ */
+export interface ConsoleClearRequest {
+  mode: "all" | "filtered";
+  filters?: ConsoleQueryRequest;
+}
+
+/**
+ * Console clear response payload.
+ */
+export interface ConsoleClearResult {
+  deleted: number;
+}
+
+/**
  * 【ConsoleEventEntry - 控制台事件条目】
  * 
  * 作用：单条操作日志记录。

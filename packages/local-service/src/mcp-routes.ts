@@ -4,6 +4,7 @@
  */
 import { randomUUID } from "node:crypto";
 import type {
+  ConsoleClearRequest,
   ConfirmationDecisionRequest,
   McpError,
   McpInitializeResult,
@@ -12,6 +13,7 @@ import type {
   McpToolCallParams,
   McpToolCallResult,
   McpToolDescriptor,
+  PolicyRuntimePatch,
   SiteId
 } from "@flycode/shared-types";
 import type { FastifyInstance } from "fastify";
@@ -208,6 +210,74 @@ export async function registerMcpRoutes(app: FastifyInstance, context: ServiceCo
     return {
       ok: true,
       data: saved
+    };
+  });
+
+  app.get("/v1/policy/runtime", async () => {
+    return {
+      ok: true,
+      data: context.policyRuntimeManager.getRuntime()
+    };
+  });
+
+  app.post<{ Body: PolicyRuntimePatch }>("/v1/policy/runtime/validate", async (request) => {
+    const body = request.body as PolicyRuntimePatch;
+    const validation = context.policyRuntimeManager.validatePatch(body);
+    return {
+      ok: true,
+      data: validation
+    };
+  });
+
+  app.post<{ Body: PolicyRuntimePatch }>("/v1/policy/runtime", async (request) => {
+    const body = request.body as PolicyRuntimePatch;
+    const next = await context.policyRuntimeManager.applyPatch(body);
+    return {
+      ok: true,
+      data: next
+    };
+  });
+
+  app.get<{
+    Querystring: {
+      site?: SiteId | "all";
+      status?: "success" | "failed" | "pending" | "all";
+      tool?: string;
+      keyword?: string;
+      from?: string;
+      to?: string;
+      limit?: string;
+    };
+  }>("/v1/console/export", async (request) => {
+    const events = await context.consoleEventLogger.exportRecent({
+      site: request.query.site,
+      status: request.query.status,
+      tool: request.query.tool,
+      keyword: request.query.keyword,
+      from: request.query.from,
+      to: request.query.to,
+      limit: request.query.limit ? Number(request.query.limit) : undefined
+    });
+    return {
+      ok: true,
+      data: events
+    };
+  });
+
+  app.post<{ Body: ConsoleClearRequest }>("/v1/console/clear", async (request) => {
+    const body = request.body as ConsoleClearRequest;
+    if (!body || (body.mode !== "all" && body.mode !== "filtered")) {
+      throw new AppError({
+        statusCode: 422,
+        code: "INVALID_INPUT",
+        message: "Body mode must be 'all' or 'filtered'"
+      });
+    }
+
+    const result = await context.consoleEventLogger.clear(body);
+    return {
+      ok: true,
+      data: result
     };
   });
 }

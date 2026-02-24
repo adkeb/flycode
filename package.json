@@ -7,6 +7,12 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces --if-present",
+    "pack:desktop": "npm run pack -w @flycode/desktop-app",
+    "dist:desktop": "npm run dist -w @flycode/desktop-app",
+    "dist:desktop:win": "npm run dist:win -w @flycode/desktop-app",
+    "dist:desktop:win:portable": "npm run dist:win:portable -w @flycode/desktop-app",
+    "dist:desktop:win:dir": "npm run dist:win:dir -w @flycode/desktop-app",
+    "dist:desktop:linux": "npm run dist:linux -w @flycode/desktop-app",
     "build:extension": "npm run build -w @flycode/extension",
     "build:extension:windows": "npm run build:extension && npm run sync:extension:windows",
     "dev:desktop": "npm run dev -w @flycode/desktop-app",

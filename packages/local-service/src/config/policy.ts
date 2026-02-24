@@ -67,6 +67,7 @@ import path from "node:path";
  *   require_confirmation_default: false
  */
 import YAML from "yaml";
+import type { PolicyRuntimePatch, PolicyValidationResult } from "@flycode/shared-types";
 
 /**
  * 【PolicyConfig - 策略配置类型】
@@ -605,6 +606,132 @@ export async function loadPolicyConfig(): Promise<PolicyConfig> {
     // 返回初始化的默认策略
     return initial;
   }
+}
+
+export async function savePolicyConfig(next: PolicyConfig): Promise<PolicyConfig> {
+  const policyPath = getPolicyFilePath();
+  const normalized = normalizePolicy(next);
+  await fs.writeFile(policyPath, YAML.stringify(normalized), "utf8");
+  return normalized;
+}
+
+export function validatePolicyPatch(current: PolicyConfig, patch: PolicyRuntimePatch): PolicyValidationResult {
+  const errors: PolicyValidationResult["errors"] = [];
+  const hasAllowedRoots = Object.prototype.hasOwnProperty.call(patch, "allowed_roots");
+  const hasProcess = Object.prototype.hasOwnProperty.call(patch, "process");
+
+  if (!hasAllowedRoots && !hasProcess) {
+    errors.push({
+      field: "patch",
+      message: "Patch cannot be empty"
+    });
+  }
+
+  if (hasAllowedRoots) {
+    if (!Array.isArray(patch.allowed_roots)) {
+      errors.push({ field: "allowed_roots", message: "allowed_roots must be an array of absolute paths" });
+    } else {
+      if (patch.allowed_roots.length === 0) {
+        errors.push({ field: "allowed_roots", message: "allowed_roots cannot be empty" });
+      }
+      for (const [index, item] of patch.allowed_roots.entries()) {
+        const value = String(item ?? "").trim();
+        if (!value) {
+          errors.push({ field: `allowed_roots[${index}]`, message: "Path cannot be empty" });
+          continue;
+        }
+        if (!path.isAbsolute(value)) {
+          errors.push({ field: `allowed_roots[${index}]`, message: "Path must be absolute" });
+        }
+      }
+    }
+  }
+
+  if (patch.process) {
+    if (Object.prototype.hasOwnProperty.call(patch.process, "allowed_commands")) {
+      if (!Array.isArray(patch.process.allowed_commands)) {
+        errors.push({
+          field: "process.allowed_commands",
+          message: "process.allowed_commands must be an array of command names"
+        });
+      } else if (patch.process.allowed_commands.length === 0) {
+        errors.push({ field: "process.allowed_commands", message: "process.allowed_commands cannot be empty" });
+      } else {
+        for (const [index, item] of patch.process.allowed_commands.entries()) {
+          const command = String(item ?? "").trim();
+          if (!command) {
+            errors.push({ field: `process.allowed_commands[${index}]`, message: "Command cannot be empty" });
+          }
+        }
+      }
+    }
+
+    if (Object.prototype.hasOwnProperty.call(patch.process, "allowed_cwds")) {
+      if (!Array.isArray(patch.process.allowed_cwds)) {
+        errors.push({
+          field: "process.allowed_cwds",
+          message: "process.allowed_cwds must be an array of absolute paths"
+        });
+      } else {
+        for (const [index, item] of patch.process.allowed_cwds.entries()) {
+          const cwd = String(item ?? "").trim();
+          if (!cwd) {
+            errors.push({ field: `process.allowed_cwds[${index}]`, message: "Path cannot be empty" });
+            continue;
+          }
+          if (!path.isAbsolute(cwd)) {
+            errors.push({ field: `process.allowed_cwds[${index}]`, message: "Path must be absolute" });
+          }
+        }
+      }
+    }
+  }
+
+  try {
+    mergePolicyPatch(current, patch);
+  } catch (error: unknown) {
+    errors.push({
+      field: "patch",
+      message: (error as Error).message ?? "Invalid policy patch"
+    });
+  }
+
+  return {
+    ok: errors.length === 0,
+    errors
+  };
+}
+
+export function mergePolicyPatch(current: PolicyConfig, patch: PolicyRuntimePatch): PolicyConfig {
+  const next: PolicyConfig = JSON.parse(JSON.stringify(current));
+
+  if (Array.isArray(patch.allowed_roots)) {
+    next.allowed_roots = patch.allowed_roots.map((item) => String(item).trim());
+  }
+
+  if (patch.process?.allowed_commands) {
+    const dedup = new Set<string>();
+    for (const item of patch.process.allowed_commands) {
+      const command = String(item).trim();
+      if (command) {
+        dedup.add(command);
+      }
+    }
+    next.process.allowed_commands = Array.from(dedup);
+  }
+
+  if (patch.process?.allowed_cwds) {
+    const dedup = new Set<string>();
+    for (const item of patch.process.allowed_cwds) {
+      const cwd = String(item).trim();
+      if (cwd) {
+        dedup.add(cwd);
+      }
+    }
+    next.process.allowed_cwds = Array.from(dedup);
+  }
+
+  return normalizePolicy(next);
 }
 
 // =============================================================================

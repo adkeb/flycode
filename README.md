@@ -99,6 +99,32 @@ npm run typecheck
 npm run test
 ```
 
+## 打包成应用程序
+
+1. 打包桌面应用（当前平台，输出 unpacked 目录）
+
+```bash
+npm run pack:desktop
+```
+
+2. 生成安装包
+
+```bash
+npm run dist:desktop
+```
+
+3. 按平台打包
+
+```bash
+# Windows（需在 Windows 环境执行，或准备好 wine）
+npm run dist:desktop:win
+
+# Linux
+npm run dist:desktop:linux
+```
+
+产物默认在 `packages/desktop-app/release/`。
+
 ## 说明
 
 - 服务仅监听 `127.0.0.1`
