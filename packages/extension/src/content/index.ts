@@ -243,7 +243,17 @@ function scheduleMask(delayMs: number): void {
 
 function primeExistingRequests(): void {
   const blocks = adapter.collectAssistantBlocks();
-  for (const block of blocks) {
+  const latestAssistantRange = findLatestAssistantMessageRange(blocks);
+  for (let idx = 0; idx < blocks.length; idx += 1) {
+    const block = blocks[idx];
+    if (
+      latestAssistantRange &&
+      idx >= latestAssistantRange.start &&
+      idx <= latestAssistantRange.end
+    ) {
+      // Keep latest assistant message unresolved; it may be the one that needs execution.
+      continue;
+    }
     if (!shouldTryParseAsMcpRequest(block)) {
       continue;
     }
@@ -268,64 +278,155 @@ async function runScan(): Promise<void> {
     const blocks = adapter.collectAssistantBlocks();
     pushDebug("scan.start", "scan begin", { blockCount: blocks.length });
 
-    // Iterate from latest to oldest and execute at most one unresolved request.
-    for (let idx = blocks.length - 1; idx >= 0; idx -= 1) {
-      const block = blocks[idx];
-      if (!block || block.source === "user") {
-        continue;
-      }
-      if (processedBlocks.has(block.node)) {
-        continue;
-      }
-      pushDebug("scan.candidate", "candidate block", {
-        index: idx,
-        kind: block.kind,
-        source: block.source,
-        textHead: block.text.slice(0, 120)
-      });
-
-      if (!shouldTryParseAsMcpRequest(block)) {
-        maybeEmitLegacyMigrationNotice(block);
-        processedBlocks.add(block.node);
-        continue;
-      }
-
-      const parsed = parseMcpRequestBlock(block.text);
-      if (!parsed) {
-        pushDebug("scan.parse", "parse failed", { index: idx });
-        if (!mayContainMcpCallText(block.text)) {
-          processedBlocks.add(block.node);
-        }
-        continue;
-      }
-      pushDebug("scan.parse", "parse ok", { id: parsed.id, method: parsed.envelope.method });
-
-      processedBlocks.add(block.node);
-
-      const executionKey = buildExecutionKey(block.node, parsed.requestHash, parsed.id);
-      if (executionLedger.has(executionKey)) {
-        pushDebug("scan.skip", "execution key already handled", { id: parsed.id });
-        continue;
-      }
-
-      rememberExecutionKey(executionKey);
-      executionMeta.set(parsed.id, {
-        method: parsed.envelope.method,
-        tool:
-          parsed.envelope.method === "tools/call" &&
-          parsed.envelope.params &&
-          typeof parsed.envelope.params === "object"
-            ? String((parsed.envelope.params as { name?: unknown }).name ?? "")
-            : undefined
-      });
-      pushDebug("scan.execute", "executing request", { id: parsed.id, method: parsed.envelope.method });
-      await executeMcpRequest(parsed.envelope);
+    const latestAssistantRange = findLatestAssistantMessageRange(blocks);
+    if (!latestAssistantRange) {
+      pushDebug("scan.skip", "no assistant message found");
       return;
     }
-    pushDebug("scan.skip", "no executable mcp-request found");
+
+    if (hasUserBlockAfter(blocks, latestAssistantRange.end)) {
+      pushDebug("scan.skip", "latest assistant message already followed by user block", {
+        range: latestAssistantRange
+      });
+      return;
+    }
+
+    const candidateIndex = findLatestRequestIndexInRange(
+      blocks,
+      latestAssistantRange.start,
+      latestAssistantRange.end
+    );
+    if (candidateIndex < 0) {
+      pushDebug("scan.skip", "latest assistant message has no mcp-request", {
+        range: latestAssistantRange
+      });
+      return;
+    }
+
+    const block = blocks[candidateIndex];
+    if (!block || processedBlocks.has(block.node)) {
+      pushDebug("scan.skip", "latest request block already processed", {
+        candidateIndex
+      });
+      return;
+    }
+
+    pushDebug("scan.candidate", "latest request block in latest assistant message", {
+      index: candidateIndex,
+      range: latestAssistantRange,
+      kind: block.kind,
+      source: block.source,
+      textHead: block.text.slice(0, 120)
+    });
+
+    if (!shouldTryParseAsMcpRequest(block)) {
+      maybeEmitLegacyMigrationNotice(block);
+      processedBlocks.add(block.node);
+      pushDebug("scan.skip", "latest assistant block is not mcp-request");
+      return;
+    }
+
+    const parsed = parseMcpRequestBlock(block.text);
+    if (!parsed) {
+      pushDebug("scan.parse", "parse failed", { index: candidateIndex });
+      if (!mayContainMcpCallText(block.text)) {
+        processedBlocks.add(block.node);
+      }
+      return;
+    }
+
+    pushDebug("scan.parse", "parse ok", { id: parsed.id, method: parsed.envelope.method });
+    processedBlocks.add(block.node);
+
+    const executionKey = buildExecutionKey(block.node, parsed.requestHash, parsed.id);
+    if (executionLedger.has(executionKey)) {
+      pushDebug("scan.skip", "execution key already handled", { id: parsed.id });
+      return;
+    }
+
+    rememberExecutionKey(executionKey);
+    executionMeta.set(parsed.id, {
+      method: parsed.envelope.method,
+      tool:
+        parsed.envelope.method === "tools/call" &&
+        parsed.envelope.params &&
+        typeof parsed.envelope.params === "object"
+          ? String((parsed.envelope.params as { name?: unknown }).name ?? "")
+          : undefined
+    });
+    pushDebug("scan.execute", "executing request", { id: parsed.id, method: parsed.envelope.method });
+    await executeMcpRequest(parsed.envelope);
+    return;
   } finally {
     busy = false;
   }
+}
+
+function findLatestAssistantMessageRange(
+  blocks: AssistantBlock[]
+): { start: number; end: number; messageKey: string } | null {
+  for (let idx = blocks.length - 1; idx >= 0; idx -= 1) {
+    const block = blocks[idx];
+    if (!block || block.source === "user") {
+      continue;
+    }
+
+    const messageKey = deriveMessageAnchor(block.node);
+    let start = idx;
+    let end = idx;
+
+    while (start - 1 >= 0) {
+      const prev = blocks[start - 1];
+      if (!prev || prev.source === "user") {
+        break;
+      }
+      if (deriveMessageAnchor(prev.node) !== messageKey) {
+        break;
+      }
+      start -= 1;
+    }
+
+    while (end + 1 < blocks.length) {
+      const next = blocks[end + 1];
+      if (!next || next.source === "user") {
+        break;
+      }
+      if (deriveMessageAnchor(next.node) !== messageKey) {
+        break;
+      }
+      end += 1;
+    }
+
+    return { start, end, messageKey };
+  }
+  return null;
+}
+
+function findLatestRequestIndexInRange(
+  blocks: AssistantBlock[],
+  start: number,
+  end: number
+): number {
+  for (let idx = end; idx >= start; idx -= 1) {
+    const block = blocks[idx];
+    if (!block || block.source === "user") {
+      continue;
+    }
+    if (!shouldTryParseAsMcpRequest(block)) {
+      continue;
+    }
+    return idx;
+  }
+  return -1;
+}
+
+function hasUserBlockAfter(blocks: AssistantBlock[], index: number): boolean {
+  for (let idx = index + 1; idx < blocks.length; idx += 1) {
+    if (blocks[idx]?.source === "user") {
+      return true;
+    }
+  }
+  return false;
 }
 
 function deriveBlockAnchor(node: HTMLElement): string {
@@ -371,6 +472,23 @@ function deriveBlockAnchor(node: HTMLElement): string {
     depth += 1;
   }
   return `path:${pathParts.join(">")}`;
+}
+
+function deriveMessageAnchor(node: HTMLElement): string {
+  const messageRoot = node.closest(
+    "[data-message-id], [data-msg-id], [data-id], ._81e7b5e, .ds-message, .qwen-chat-message-assistant, .qwen-chat-message-user, [data-message-author-role]"
+  );
+  if (messageRoot instanceof HTMLElement) {
+    const id = messageRoot.getAttribute("data-message-id");
+    if (id) return `msg:data-message-id:${id}`;
+    const msgId = messageRoot.getAttribute("data-msg-id");
+    if (msgId) return `msg:data-msg-id:${msgId}`;
+    const dataId = messageRoot.getAttribute("data-id");
+    if (dataId) return `msg:data-id:${dataId}`;
+    if (messageRoot.id) return `msg:id:${messageRoot.id}`;
+    return `msg:${deriveBlockAnchor(messageRoot)}`;
+  }
+  return `msg:${deriveBlockAnchor(node)}`;
 }
 
 function shouldTryParseAsMcpRequest(block: AssistantBlock): boolean {
@@ -715,8 +833,9 @@ function maybeResetForConversationChange(): void {
 
 function buildExecutionKey(node: HTMLElement, requestHash: string, requestId: string): string {
   const conversationId = normalizeConversationKey(lastConversationId || adapter.conversationId());
-  const blockAnchor = deriveBlockAnchor(node);
-  return `${conversationId}|${blockAnchor}|${requestId}|${requestHash}`;
+  const messageAnchor = deriveMessageAnchor(node);
+  // Avoid DOM path jitter between rerenders/reopen; key by conversation + message + request semantics.
+  return `${conversationId}|${messageAnchor}|${requestId}|${requestHash}`;
 }
 
 function rememberExecutionKey(key: string): void {
