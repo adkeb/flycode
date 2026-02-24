@@ -119,8 +119,9 @@ function scheduleMask(delayMs: number): void {
 }
 
 function primeExistingRequests(): void {
-  for (const block of adapter.collectAssistantBlocks()) {
-    if (block.kind !== "mcp-request") {
+  const blocks = adapter.collectAssistantBlocks();
+  for (const block of blocks) {
+    if (!shouldTryParseAsMcpRequest(block)) {
       continue;
     }
     const parsed = parseMcpRequestBlock(block.text);
@@ -128,7 +129,8 @@ function primeExistingRequests(): void {
       continue;
     }
     processedBlocks.add(block.node);
-    rememberExecutionKey(buildExecutionKey(parsed.id, parsed.requestHash));
+    // Cold start replay guard: mark existing history as consumed.
+    rememberExecutionKey(buildExecutionKey(block.node, parsed.requestHash));
   }
 }
 
@@ -141,44 +143,260 @@ async function runScan(): Promise<void> {
   busy = true;
   try {
     const blocks = adapter.collectAssistantBlocks();
-    for (const block of blocks) {
-      if (processedBlocks.has(block.node)) {
-        continue;
-      }
-
-      if (block.kind !== "mcp-request") {
-        maybeEmitLegacyMigrationNotice(block);
-        continue;
-      }
-
-      const parsed = parseMcpRequestBlock(block.text);
-      if (!parsed) {
-        continue;
-      }
-
-      processedBlocks.add(block.node);
-
-      const executionKey = buildExecutionKey(parsed.id, parsed.requestHash);
-      if (executionLedger.has(executionKey)) {
-        continue;
-      }
-
-      rememberExecutionKey(executionKey);
-      executionMeta.set(parsed.id, {
-        method: parsed.envelope.method,
-        tool:
-          parsed.envelope.method === "tools/call" && parsed.envelope.params && typeof parsed.envelope.params === "object"
-            ? String((parsed.envelope.params as { name?: unknown }).name ?? "")
-            : undefined
-      });
-      await executeMcpRequest(parsed.envelope);
+    const latest = pickLatestAssistantBlock(blocks);
+    if (!latest) {
+      return;
     }
+
+    const block = latest;
+    if (processedBlocks.has(block.node)) {
+      return;
+    }
+
+    if (!shouldTryParseAsMcpRequest(block)) {
+      maybeEmitLegacyMigrationNotice(block);
+      processedBlocks.add(block.node);
+      return;
+    }
+
+    const parsed = parseMcpRequestBlock(block.text);
+    if (!parsed) {
+      if (!mayContainMcpCallText(block.text)) {
+        processedBlocks.add(block.node);
+      }
+      return;
+    }
+
+    processedBlocks.add(block.node);
+
+    // Only process when this assistant request has no later user message.
+    if (hasUserMessageAfter(block.node)) {
+      return;
+    }
+
+    const knownResponseIds = collectKnownResponseIds(blocks);
+    if (knownResponseIds.has(parsed.id)) {
+      rememberExecutionKey(buildExecutionKey(block.node, parsed.requestHash));
+      return;
+    }
+
+    const executionKey = buildExecutionKey(block.node, parsed.requestHash);
+    if (executionLedger.has(executionKey)) {
+      return;
+    }
+
+    rememberExecutionKey(executionKey);
+    executionMeta.set(parsed.id, {
+      method: parsed.envelope.method,
+      tool:
+        parsed.envelope.method === "tools/call" &&
+        parsed.envelope.params &&
+        typeof parsed.envelope.params === "object"
+          ? String((parsed.envelope.params as { name?: unknown }).name ?? "")
+          : undefined
+    });
+    await executeMcpRequest(parsed.envelope);
   } finally {
     busy = false;
   }
 }
 
+function collectKnownResponseIds(blocks: AssistantBlock[]): Set<string> {
+  const out = new Set<string>();
+  for (const block of blocks) {
+    if (block.source === "user") {
+      continue;
+    }
+    const id = extractResponseIdFromBlock(block);
+    if (id) {
+      out.add(id);
+    }
+  }
+  return out;
+}
+
+function extractResponseIdFromBlock(block: AssistantBlock): string | null {
+  const parsed = parseMcpResponseSummary(block.text, block.kind);
+  if (parsed?.id) {
+    return parsed.id;
+  }
+
+  const raw = block.text;
+  if (block.kind !== "mcp-response" && !/mcp-response/i.test(raw)) {
+    return null;
+  }
+
+  const strId = raw.match(/"id"\s*:\s*"([^"\n\r]+)"/i);
+  if (strId?.[1]) {
+    return strId[1];
+  }
+  const numId = raw.match(/"id"\s*:\s*([0-9]+)/i);
+  if (numId?.[1]) {
+    return numId[1];
+  }
+  return null;
+}
+
+function pickLatestAssistantBlock(blocks: AssistantBlock[]): AssistantBlock | null {
+  for (let idx = blocks.length - 1; idx >= 0; idx -= 1) {
+    const block = blocks[idx];
+    if (block.source === "user") {
+      continue;
+    }
+    return block;
+  }
+  return null;
+}
+
+function hasUserMessageAfter(node: HTMLElement): boolean {
+  const selectors = USER_MESSAGE_SELECTORS_BY_SITE[adapter.id] ?? USER_MESSAGE_SELECTORS_BY_SITE.unknown;
+  const userNodes = new Set<HTMLElement>();
+  for (const selector of selectors) {
+    for (const candidate of Array.from(document.querySelectorAll(selector))) {
+      if (candidate instanceof HTMLElement) {
+        userNodes.add(candidate);
+      }
+    }
+  }
+
+  for (const userNode of userNodes) {
+    if (userNode === node || node.contains(userNode) || userNode.contains(node)) {
+      continue;
+    }
+    const relation = node.compareDocumentPosition(userNode);
+    if ((relation & Node.DOCUMENT_POSITION_FOLLOWING) !== 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const USER_MESSAGE_SELECTORS_BY_SITE: Record<string, string[]> = {
+  qwen: [".qwen-chat-message-user", ".user-message-content"],
+  deepseek: ["._81e7b5e", ".ds-message--user", "[data-role='user']"],
+  gemini: ["[data-message-author-role='user']", ".user-query-content", ".user-message", ".chat-turn-user"],
+  unknown: ["[data-message-author-role='user']", ".user-message", ".chat-turn-user"]
+};
+
+function deriveBlockAnchor(node: HTMLElement): string {
+  const anchors = [
+    node.closest("[id]"),
+    node.closest("[data-message-id]"),
+    node.closest("[data-id]"),
+    node.closest("[data-msg-id]")
+  ];
+  for (const anchor of anchors) {
+    if (!(anchor instanceof HTMLElement)) {
+      continue;
+    }
+    if (anchor.id) {
+      return `id:${anchor.id}`;
+    }
+    const dataMessageId = anchor.getAttribute("data-message-id");
+    if (dataMessageId) {
+      return `data-message-id:${dataMessageId}`;
+    }
+    const dataId = anchor.getAttribute("data-id");
+    if (dataId) {
+      return `data-id:${dataId}`;
+    }
+    const dataMsgId = anchor.getAttribute("data-msg-id");
+    if (dataMsgId) {
+      return `data-msg-id:${dataMsgId}`;
+    }
+  }
+
+  const pathParts: string[] = [];
+  let current: HTMLElement | null = node;
+  let depth = 0;
+  while (current && depth < 6) {
+    const parentEl: HTMLElement | null = current.parentElement;
+    if (!parentEl) {
+      break;
+    }
+    const siblings = Array.from(parentEl.children);
+    const index = siblings.indexOf(current);
+    pathParts.push(`${current.tagName.toLowerCase()}:${index}`);
+    current = parentEl;
+    depth += 1;
+  }
+  return `path:${pathParts.join(">")}`;
+}
+
+function hashText(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function safeTrimText(text: string): string {
+  const normalized = text.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n").trim();
+  if (normalized.length <= 200) {
+    return normalized;
+  }
+  return normalized.slice(0, 200);
+}
+
+function buildLatestUserAnchor(): string {
+  const selectors = USER_MESSAGE_SELECTORS_BY_SITE[adapter.id] ?? USER_MESSAGE_SELECTORS_BY_SITE.unknown;
+  let latest: HTMLElement | null = null;
+  for (const selector of selectors) {
+    for (const candidate of Array.from(document.querySelectorAll(selector))) {
+      if (!(candidate instanceof HTMLElement)) {
+        continue;
+      }
+      latest = candidate;
+    }
+  }
+  if (!latest) {
+    return "no-user-message";
+  }
+
+  const explicitId = latest.getAttribute("data-message-id") ?? latest.getAttribute("data-id") ?? latest.id;
+  if (explicitId) {
+    return `user-id:${explicitId}`;
+  }
+
+  return `user-hash:${hashText(safeTrimText(latest.textContent ?? ""))}`;
+}
+
+function shouldTryParseAsMcpRequest(block: AssistantBlock): boolean {
+  if (block.source === "user") {
+    return false;
+  }
+  if (block.kind === "mcp-request") {
+    return true;
+  }
+  if (block.kind !== "unknown") {
+    return false;
+  }
+  return mayContainMcpCallText(block.text);
+}
+
+function mayContainMcpCallText(text: string): boolean {
+  const raw = text.toLowerCase();
+  if (raw.includes("mcp-request")) {
+    return true;
+  }
+  if (/"method"\s*:\s*"tools\/call"/i.test(raw)) {
+    return true;
+  }
+  if (/"method"\s*:\s*"initialize"/i.test(raw)) {
+    return true;
+  }
+  if (/"method"\s*:\s*"tools\/list"/i.test(raw)) {
+    return true;
+  }
+  return false;
+}
+
 function maybeEmitLegacyMigrationNotice(block: AssistantBlock): void {
+  if (block.source === "user") {
+    return;
+  }
   const text = block.text;
   if (!text.includes("flycode-call")) {
     return;
@@ -392,11 +610,14 @@ function maybeResetForConversationChange(): void {
   }
   lastConversationId = current;
   processedBlocks = new WeakSet();
+  executionMeta.clear();
 }
 
-function buildExecutionKey(callId: string, requestHash: string): string {
-  const conversationId = adapter.conversationId().trim() || "(unknown-conversation)";
-  return `${conversationId}|${callId}|${requestHash}`;
+function buildExecutionKey(node: HTMLElement, requestHash: string): string {
+  const conversationId = normalizeConversationKey(lastConversationId || adapter.conversationId());
+  const blockAnchor = deriveBlockAnchor(node);
+  const latestUserAnchor = buildLatestUserAnchor();
+  return `${conversationId}|${blockAnchor}|${latestUserAnchor}|${requestHash}`;
 }
 
 function rememberExecutionKey(key: string): void {
@@ -442,6 +663,11 @@ function loadLedger(): void {
   } catch {
     // ignore
   }
+}
+
+function normalizeConversationKey(conversationId: string): string {
+  const key = conversationId.trim();
+  return key || "(unknown-conversation)";
 }
 
 function installDebugApi(): void {

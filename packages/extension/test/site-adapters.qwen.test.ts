@@ -55,6 +55,28 @@ describe("QwenSiteAdapter", () => {
     expect(parsed?.status).toBe("成功");
   });
 
+  it("extracts user-message fenced mcp-response block and marks as user source", () => {
+    document.body.innerHTML = `
+      <div class="qwen-chat-message qwen-chat-message-user">
+        <p class="whitespace-pre-wrap user-message-content">
+          <span>\`\`\`mcp-response
+{"jsonrpc":"2.0","id":"call-028","result":{"content":[{"type":"text","text":"ok"}]}}
+\`\`\`</span>
+        </p>
+      </div>
+    `;
+
+    const adapter = new QwenSiteAdapter();
+    const blocks = adapter.collectAssistantBlocks();
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]?.kind).toBe("mcp-response");
+    expect(blocks[0]?.source).toBe("user");
+
+    const parsed = parseMcpResponseSummary(blocks[0]?.text ?? "", blocks[0]?.kind ?? "unknown");
+    expect(parsed?.id).toBe("call-028");
+    expect(parsed?.status).toBe("成功");
+  });
+
   it("applies summary by hiding source block and creating one summary node", () => {
     document.body.innerHTML = `
       <pre id="source" class="qwen-markdown-code">

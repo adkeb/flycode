@@ -2,7 +2,13 @@
  * FlyCode Note: DeepSeek site adapter
  * Keeps DeepSeek behavior independent from Qwen while preserving current MCP extraction flow.
  */
-import type { SiteAdapter, AssistantBlock, AssistantBlockKind, SubmitOutcome } from "../common/types.js";
+import type {
+  SiteAdapter,
+  AssistantBlock,
+  AssistantBlockKind,
+  AssistantBlockSource,
+  SubmitOutcome
+} from "../common/types.js";
 import { normalizeBlockText } from "../common/text-normalize.js";
 import {
   DEEPSEEK_ASSISTANT_BLOCK_SELECTORS,
@@ -67,27 +73,35 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
     }
 
     let attempts = 0;
-    const beforeText = this.getCurrentText().trim();
+    const beforeText = this.getCurrentText();
+    const beforeUserCount = document.querySelectorAll("._81e7b5e").length;
+
+    // Button first: avoid Enter introducing a newline and creating false-positive submit.
+    const delays = [0, 80, 220];
+    for (const delay of delays) {
+      if (delay > 0) {
+        await sleep(delay);
+      }
+      const button = this.findEnabledSendButton();
+      if (!button) {
+        continue;
+      }
+      attempts += 1;
+      button.click();
+      if (await this.waitForSubmitSignal(beforeUserCount, beforeText, 520)) {
+        return { ok: true, method: "button", attempts };
+      }
+    }
 
     attempts += 1;
     input.focus();
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true }));
     input.dispatchEvent(new KeyboardEvent("keyup", { key: "Enter", code: "Enter", bubbles: true }));
-
-    if (await this.waitForTextMutation(beforeText, 480)) {
+    if (await this.waitForSubmitSignal(beforeUserCount, beforeText, 1200)) {
       return { ok: true, method: "enter", attempts };
     }
 
-    const button = this.findEnabledSendButton();
-    if (button) {
-      attempts += 1;
-      button.click();
-      if (await this.waitForTextMutation(beforeText, 900)) {
-        return { ok: true, method: "button", attempts };
-      }
-    }
-
-    return { ok: false, method: button ? "button" : "enter", attempts };
+    return { ok: false, method: "enter", attempts };
   }
 
   conversationId(): string {
@@ -105,6 +119,10 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
         continue;
       }
       let el = node;
+      const mdBlock = el.closest(".md-code-block");
+      if (mdBlock instanceof HTMLElement) {
+        el = mdBlock;
+      }
       if (el.tagName === "CODE") {
         const pre = el.closest("pre");
         if (pre instanceof HTMLElement) {
@@ -117,18 +135,50 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
       if (el.closest("textarea, [contenteditable='true'], input")) {
         continue;
       }
+      if ((el.tagName === "PRE" || el.tagName === "CODE") && el.closest(".md-code-block")) {
+        // md-code-block handled at wrapper level.
+        continue;
+      }
       dedupe.add(el);
-      const text = normalizeBlockText(el.textContent ?? "");
+      const { text, headerHint } = this.extractBlockText(el);
+      if (!text) {
+        continue;
+      }
+      const source = resolveBlockSource(el);
+      let kind = detectBlockKind(text, `${el.className} ${headerHint}`);
+      if (source === "user" && kind === "mcp-request") {
+        // Never execute user-side echoed request blocks.
+        kind = "unknown";
+      }
       out.push({
         node: el,
         text,
-        kind: detectBlockKind(text, el.className)
+        kind,
+        source
       });
     }
     return out;
   }
 
   applyMaskedSummary(node: HTMLElement, summary: string): void {
+    if (node.classList.contains("md-code-block")) {
+      if (node.getAttribute("data-flycode-masked") === "1") {
+        return;
+      }
+      node.style.setProperty("display", "none", "important");
+      node.setAttribute("data-flycode-masked", "1");
+      let summaryNode: HTMLElement | null =
+        node.nextElementSibling instanceof HTMLElement ? node.nextElementSibling : null;
+      if (!summaryNode || summaryNode.getAttribute("data-flycode-summary") !== "1") {
+        summaryNode = document.createElement("div");
+        summaryNode.setAttribute("data-flycode-summary", "1");
+        node.insertAdjacentElement("afterend", summaryNode);
+      }
+      summaryNode.textContent = summary;
+      applySummaryStyles(summaryNode);
+      return;
+    }
+
     const target = this.resolveMaskTarget(node);
     if (target.getAttribute("data-flycode-masked") === "1") {
       return;
@@ -138,11 +188,7 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
     if (target !== node) {
       node.setAttribute("data-flycode-masked", "1");
     }
-    target.style.setProperty("white-space", "pre-wrap", "important");
-    target.style.setProperty("color", "#1f8f3a", "important");
-    target.style.setProperty("font-size", "12px", "important");
-    target.style.setProperty("line-height", "1.35", "important");
-    target.style.setProperty("font-weight", "500", "important");
+    applySummaryStyles(target);
   }
 
   private resolveMaskTarget(node: HTMLElement): HTMLElement {
@@ -169,11 +215,31 @@ export class DeepSeekSiteAdapter implements SiteAdapter {
     return null;
   }
 
-  private async waitForTextMutation(beforeText: string, timeoutMs: number): Promise<boolean> {
+  private extractBlockText(node: HTMLElement): { text: string; headerHint: string } {
+    if (node.classList.contains("md-code-block")) {
+      const header = normalizeBlockText(node.querySelector(".d813de27")?.textContent ?? "");
+      const pre = node.querySelector("pre");
+      const body = normalizeBlockText((pre instanceof HTMLElement ? pre.textContent : node.textContent) ?? "");
+      const text = header ? `${header}\n${body}` : body;
+      return { text, headerHint: header };
+    }
+    return { text: normalizeBlockText(node.textContent ?? ""), headerHint: "" };
+  }
+
+  private async waitForSubmitSignal(beforeUserCount: number, beforeText: string, timeoutMs: number): Promise<boolean> {
+    const normalizedBefore = beforeText.trim();
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+      const currentCount = document.querySelectorAll("._81e7b5e").length;
+      if (currentCount > beforeUserCount) {
+        return true;
+      }
+
       const current = this.getCurrentText().trim();
-      if (beforeText && current !== beforeText) {
+      if (normalizedBefore && current.length < normalizedBefore.length && current.length <= Math.floor(normalizedBefore.length * 0.4)) {
+        return true;
+      }
+      if (normalizedBefore && current.length === 0) {
         return true;
       }
       await sleep(80);
@@ -186,19 +252,29 @@ export function createDeepSeekAdapter(): SiteAdapter {
   return new DeepSeekSiteAdapter();
 }
 
+function resolveBlockSource(node: HTMLElement): AssistantBlockSource {
+  if (node.closest("._81e7b5e") && !node.closest(".ds-message")) {
+    return "user";
+  }
+  if (node.closest(".ds-message")) {
+    return "assistant";
+  }
+  return "unknown";
+}
+
 function detectBlockKind(text: string, className: string): AssistantBlockKind {
-  const raw = text.toLowerCase();
+  const raw = normalizeBlockText(text).toLowerCase();
   const klass = className.toLowerCase();
-  if (klass.includes("mcp-request") || raw.includes("```mcp-request") || raw.startsWith("mcp-request\n")) {
+  if (klass.includes("mcp-request") || /^`{3,}\s*mcp-request\b/.test(raw) || /^mcp-request\s*\n/.test(raw)) {
     return "mcp-request";
   }
-  if (klass.includes("mcp-response") || raw.includes("```mcp-response") || raw.startsWith("mcp-response\n")) {
+  if (klass.includes("mcp-response") || /^`{3,}\s*mcp-response\b/.test(raw) || /^mcp-response\s*\n/.test(raw)) {
     return "mcp-response";
   }
-  if (klass.includes("flycode-result") || raw.includes("```flycode-result") || raw.startsWith("flycode-result\n")) {
+  if (klass.includes("flycode-result") || /^`{3,}\s*flycode-result\b/.test(raw) || /^flycode-result\s*\n/.test(raw)) {
     return "flycode-result";
   }
-  if (klass.includes("flycode-upload") || raw.includes("```flycode-upload") || raw.startsWith("flycode-upload\n")) {
+  if (klass.includes("flycode-upload") || /^`{3,}\s*flycode-upload\b/.test(raw) || /^flycode-upload\s*\n/.test(raw)) {
     return "flycode-upload";
   }
   return "unknown";
@@ -206,4 +282,12 @@ function detectBlockKind(text: string, className: string): AssistantBlockKind {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function applySummaryStyles(target: HTMLElement): void {
+  target.style.setProperty("white-space", "pre-wrap", "important");
+  target.style.setProperty("color", "#1f8f3a", "important");
+  target.style.setProperty("font-size", "12px", "important");
+  target.style.setProperty("line-height", "1.35", "important");
+  target.style.setProperty("font-weight", "500", "important");
 }

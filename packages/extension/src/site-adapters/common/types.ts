@@ -6,11 +6,13 @@
 import type { SiteId } from "@flycode/shared-types";
 
 export type AssistantBlockKind = "mcp-request" | "mcp-response" | "flycode-result" | "flycode-upload" | "unknown";
+export type AssistantBlockSource = "assistant" | "user" | "unknown";
 
 export interface AssistantBlock {
   node: HTMLElement;
   kind: AssistantBlockKind;
   text: string;
+  source?: AssistantBlockSource;
 }
 
 export interface SubmitOutcome {

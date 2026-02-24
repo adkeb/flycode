@@ -36,6 +36,33 @@ describe("summary-protocol", () => {
     expect(parsed?.status).toBe("等待确认");
   });
 
+  it("parses mcp-response when closing fence is missing", () => {
+    const raw = [
+      "```mcp-response",
+      '{"jsonrpc":"2.0","id":"call-open-only-201","result":{"content":[{"type":"text","text":"ok"}]}}'
+    ].join("\n");
+
+    const parsed = parseMcpResponseSummary(raw, "mcp-response");
+    expect(parsed?.id).toBe("call-open-only-201");
+    expect(parsed?.status).toBe("成功");
+  });
+
+  it("parses latest mcp-response when multiple fenced blocks exist", () => {
+    const raw = [
+      "```mcp-response",
+      '{"jsonrpc":"2.0","id":"call-018","error":{"code":-32062,"message":"Path cannot be empty"}}',
+      "```",
+      "",
+      "```mcp-response",
+      '{"jsonrpc":"2.0","id":"call-019","result":{"content":[{"type":"text","text":"ok"}]}}',
+      "```"
+    ].join("\n");
+
+    const parsed = parseMcpResponseSummary(raw, "mcp-response");
+    expect(parsed?.id).toBe("call-019");
+    expect(parsed?.status).toBe("成功");
+  });
+
   it("parses legacy flycode-result into status and command", () => {
     const raw = [
       "```flycode-result",
@@ -59,6 +86,11 @@ describe("summary-protocol", () => {
       "```"
     ].join("\n");
 
+    expect(isFlycodeUploadPayload(raw, "flycode-upload")).toBe(true);
+  });
+
+  it("detects flycode-upload payload without closing fence", () => {
+    const raw = ["```flycode-upload", "[source] flycode-file-picker", "[mode] files"].join("\n");
     expect(isFlycodeUploadPayload(raw, "flycode-upload")).toBe(true);
   });
 

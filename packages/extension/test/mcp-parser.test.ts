@@ -31,6 +31,18 @@ describe("parseMcpRequestBlock", () => {
     expect(parsed?.envelope.method).toBe("tools/call");
   });
 
+  it("parses request when opening fence exists but closing fence is missing", () => {
+    const parsed = parseMcpRequestBlock(
+      [
+        "```mcp-request",
+        '{"jsonrpc":"2.0","id":"call-open-only-001","method":"tools/call","params":{"name":"fs.ls","arguments":{"path":"/root/work/flycode"}}}'
+      ].join("\n")
+    );
+
+    expect(parsed?.id).toBe("call-open-only-001");
+    expect(parsed?.envelope.method).toBe("tools/call");
+  });
+
   it("parses payload when wrapper text exists around json", () => {
     const parsed = parseMcpRequestBlock(
       [

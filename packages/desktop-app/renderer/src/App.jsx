@@ -13,6 +13,7 @@ import {
   Select,
   SimpleGrid,
   Stack,
+  Switch,
   Text,
   TextInput,
   Title
@@ -20,6 +21,8 @@ import {
 import { IconRefresh, IconShieldCheck, IconTerminal2 } from "@tabler/icons-react";
 
 const API_BASE = "http://127.0.0.1:39393";
+const MANAGED_SITES = ["qwen", "deepseek", "gemini"];
+const CONFIRMATION_REQUIRED_TOOLS = ["fs.write", "fs.writeBatch", "fs.rm", "fs.mv", "fs.chmod", "process.run", "shell.exec"];
 
 export default function App() {
   const [health, setHealth] = useState(null);
@@ -29,7 +32,8 @@ export default function App() {
   const [appConfig, setAppConfig] = useState({
     theme: "system",
     logRetentionDays: 30,
-    servicePort: 39393
+    servicePort: 39393,
+    alwaysAllow: {}
   });
   const [filters, setFilters] = useState({
     site: "all",
@@ -123,6 +127,41 @@ export default function App() {
     await postJson(`/v1/site-keys/rotate/${siteId}`, {});
     await loadSiteKeys();
     setNotice(`${siteId} key 已轮换。`);
+  }
+
+  async function updateAlwaysAllowMap(nextAlwaysAllow, noticeText) {
+    const saved = await postJson("/v1/app-config", {
+      ...appConfig,
+      alwaysAllow: nextAlwaysAllow
+    });
+    setAppConfig(saved.data);
+    setNotice(noticeText);
+  }
+
+  function toolAlwaysAllowEnabled(site, tool) {
+    return appConfig?.alwaysAllow?.[`${site}:${tool}`] === true;
+  }
+
+  function siteAllAlwaysAllowEnabled(site) {
+    return CONFIRMATION_REQUIRED_TOOLS.every((tool) => toolAlwaysAllowEnabled(site, tool));
+  }
+
+  async function setSiteToolAlwaysAllow(site, tool, allow) {
+    const nextAlwaysAllow = {
+      ...(appConfig.alwaysAllow ?? {}),
+      [`${site}:${tool}`]: allow
+    };
+    await updateAlwaysAllowMap(nextAlwaysAllow, `${site} ${tool} 已${allow ? "设置为免确认" : "恢复为需确认"}`);
+  }
+
+  async function setSiteAllAlwaysAllow(site, allow) {
+    const nextAlwaysAllow = {
+      ...(appConfig.alwaysAllow ?? {})
+    };
+    for (const tool of CONFIRMATION_REQUIRED_TOOLS) {
+      nextAlwaysAllow[`${site}:${tool}`] = allow;
+    }
+    await updateAlwaysAllowMap(nextAlwaysAllow, `${site} 已${allow ? "开启全部免确认" : "关闭全部免确认"}`);
   }
 
   async function decide(confirmationId, approved, alwaysAllow = false) {
@@ -282,10 +321,10 @@ export default function App() {
 
               <Card withBorder>
                 <Title order={4} mb="sm">
-                  分站点密钥
+                  站点管理
                 </Title>
                 <Stack gap="xs">
-                  {["qwen", "deepseek", "gemini"].map((site) => {
+                  {MANAGED_SITES.map((site) => {
                     const row = siteKeys?.sites?.[site];
                     return (
                       <Card key={site} withBorder p="sm">
@@ -299,6 +338,25 @@ export default function App() {
                         <Text size="xs" c="dimmed" mt={4}>
                           rotated: {row?.rotatedAt ?? "-"}
                         </Text>
+                        <Box mt="sm">
+                          <Switch
+                            size="xs"
+                            label="该站点全部高风险命令免确认"
+                            checked={siteAllAlwaysAllowEnabled(site)}
+                            onChange={(event) => void setSiteAllAlwaysAllow(site, event.currentTarget.checked)}
+                          />
+                        </Box>
+                        <Stack gap={6} mt="xs">
+                          {CONFIRMATION_REQUIRED_TOOLS.map((tool) => (
+                            <Switch
+                              key={`${site}:${tool}`}
+                              size="xs"
+                              label={`${tool} 免确认`}
+                              checked={toolAlwaysAllowEnabled(site, tool)}
+                              onChange={(event) => void setSiteToolAlwaysAllow(site, tool, event.currentTarget.checked)}
+                            />
+                          ))}
+                        </Stack>
                       </Card>
                     );
                   })}

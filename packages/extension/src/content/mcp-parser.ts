@@ -58,9 +58,15 @@ function normalize(text: string): string {
 }
 
 function extractPayload(text: string): string | null {
-  const fenced = text.match(/^```mcp-request\s*\n([\s\S]*?)\n```$/i);
+  const fenced = text.match(/^`{3,}\s*mcp-request\s*\n([\s\S]*?)\n`{3,}\s*$/i);
   if (fenced) {
     return normalizeJsonPayload(fenced[1]);
+  }
+
+  // 容错：有些页面渲染会丢失结尾 ```，仅保留开头 fence。
+  const openFenceOnly = text.match(/^`{3,}\s*mcp-request\s*\n([\s\S]+)$/i);
+  if (openFenceOnly) {
+    return normalizeJsonPayload(openFenceOnly[1]);
   }
 
   // DeepSeek 常见文本形态：代码块内容是首行 "mcp-request" + 下一行 JSON（无 ``` 文本）

@@ -1,5 +1,5 @@
 /**
- * FlyCode Note: Gemini adapter placeholder
+ * FlyCode Note: Gemini site adapter
  * Re-export for compatibility with registry imports.
  */
-export { createGeminiPlaceholderAdapter, GeminiPlaceholderAdapter } from "./adapter.js";
+export { createGeminiAdapter, createGeminiPlaceholderAdapter, GeminiSiteAdapter } from "./adapter.js";

@@ -19,23 +19,37 @@ export interface ParsedFlycodeResultSummary {
 }
 
 export function parseMcpResponseSummary(rawText: string, kind: AssistantBlockKind): ParsedMcpResponseSummary | null {
-  const payload = extractMcpResponsePayload(rawText, kind);
-  if (!payload) {
+  const payloads = extractMcpResponsePayloads(rawText, kind);
+  if (payloads.length === 0) {
     return null;
   }
 
-  let parsed: McpResponseEnvelope | null = null;
-  try {
-    parsed = JSON.parse(payload) as McpResponseEnvelope;
-  } catch {
-    return null;
+  for (let i = payloads.length - 1; i >= 0; i -= 1) {
+    const payload = payloads[i];
+    if (!payload) {
+      continue;
+    }
+    let parsed: McpResponseEnvelope | null = null;
+    try {
+      parsed = JSON.parse(payload) as McpResponseEnvelope;
+    } catch {
+      continue;
+    }
+    if (!parsed || typeof parsed !== "object" || parsed.jsonrpc !== "2.0") {
+      continue;
+    }
+    if (!("result" in parsed) && !("error" in parsed)) {
+      continue;
+    }
+
+    const idValue = parsed.id;
+    const id = typeof idValue === "string" || typeof idValue === "number" ? String(idValue) : undefined;
+    const pendingId = getPendingConfirmationId(parsed);
+    const status: SummaryStatus = pendingId ? "等待确认" : parsed.error ? "失败" : "成功";
+    return { id, status };
   }
 
-  const idValue = parsed.id;
-  const id = typeof idValue === "string" || typeof idValue === "number" ? String(idValue) : undefined;
-  const pendingId = getPendingConfirmationId(parsed);
-  const status: SummaryStatus = pendingId ? "等待确认" : parsed.error ? "失败" : "成功";
-  return { id, status };
+  return null;
 }
 
 export function parseFlycodeResultSummary(rawText: string, kind: AssistantBlockKind): ParsedFlycodeResultSummary | null {
@@ -58,7 +72,10 @@ export function isFlycodeUploadPayload(rawText: string, kind: AssistantBlockKind
   if (!raw) {
     return false;
   }
-  if (/^```flycode-upload\s*\n[\s\S]*\n```$/i.test(raw)) {
+  if (/^`{3,}\s*flycode-upload\s*\n[\s\S]*\n`{3,}\s*$/i.test(raw)) {
+    return true;
+  }
+  if (/^`{3,}\s*flycode-upload\s*\n[\s\S]+$/i.test(raw)) {
     return true;
   }
   return /^flycode-upload\s*\n[\s\S]+$/i.test(raw);
@@ -68,50 +85,66 @@ export function formatSummary(status: SummaryStatus, command: string): string {
   return [`状态：${status}`, `命令：${command}`].join("\n");
 }
 
-function extractMcpResponsePayload(rawText: string, kind: AssistantBlockKind): string | null {
+function extractMcpResponsePayloads(rawText: string, kind: AssistantBlockKind): string[] {
   const raw = normalizeBlockText(rawText);
   if (!raw) {
-    return null;
+    return [];
   }
 
-  const fenced = raw.match(/^```mcp-response\s*\n([\s\S]*?)\n```$/i);
-  if (fenced) {
-    return normalizeJsonPayload(fenced[1]);
+  const payloads: string[] = [];
+  const fencedPattern = /`{3,}\s*mcp-response\s*\n([\s\S]*?)(?:\n`{3,}\s*|$)/gi;
+  let fencedMatch: RegExpExecArray | null = fencedPattern.exec(raw);
+  while (fencedMatch) {
+    const normalized = normalizeJsonPayload(fencedMatch[1] ?? "");
+    if (normalized) {
+      payloads.push(normalized);
+    }
+    fencedMatch = fencedPattern.exec(raw);
+  }
+  if (payloads.length > 0) {
+    return payloads;
+  }
+
+  const openFenceOnly = raw.match(/^`{3,}\s*mcp-response\s*\n([\s\S]+)$/i);
+  if (openFenceOnly) {
+    const normalized = normalizeJsonPayload(openFenceOnly[1]);
+    return normalized ? [normalized] : [];
   }
 
   const plainHeader = raw.match(/^mcp-response\s*\n([\s\S]+)$/i);
   if (plainHeader) {
-    return normalizeJsonPayload(plainHeader[1]);
+    const normalized = normalizeJsonPayload(plainHeader[1]);
+    return normalized ? [normalized] : [];
   }
 
   const normalized = normalizeJsonPayload(raw);
   if (!normalized) {
-    return null;
+    return [];
   }
 
   // When adapter already classified this as mcp-response, accept JSON body directly.
   if (kind === "mcp-response") {
-    return normalized;
+    return [normalized];
   }
 
   let parsed: unknown = null;
   try {
     parsed = JSON.parse(normalized);
   } catch {
-    return null;
+    return [];
   }
 
   if (!parsed || typeof parsed !== "object") {
-    return null;
+    return [];
   }
   const envelope = parsed as Record<string, unknown>;
   if (envelope.jsonrpc !== "2.0") {
-    return null;
+    return [];
   }
   if (!("result" in envelope) && !("error" in envelope)) {
-    return null;
+    return [];
   }
-  return normalized;
+  return [normalized];
 }
 
 function extractLegacyFlycodeResultBody(rawText: string, kind: AssistantBlockKind): string | null {
@@ -120,9 +153,14 @@ function extractLegacyFlycodeResultBody(rawText: string, kind: AssistantBlockKin
     return null;
   }
 
-  const fenced = raw.match(/^```flycode-result\s*\n([\s\S]*?)\n```$/i);
+  const fenced = raw.match(/^`{3,}\s*flycode-result\s*\n([\s\S]*?)\n`{3,}\s*$/i);
   if (fenced) {
     return fenced[1];
+  }
+
+  const openFenceOnly = raw.match(/^`{3,}\s*flycode-result\s*\n([\s\S]+)$/i);
+  if (openFenceOnly) {
+    return openFenceOnly[1];
   }
 
   const plainHeader = raw.match(/^flycode-result\s*\n([\s\S]+)$/i);

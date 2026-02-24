@@ -9,7 +9,12 @@ export const QWEN_INPUT_SELECTORS = ["textarea.message-input-textarea", "textare
 
 export const QWEN_SEND_BUTTON_SELECTORS = ["button.send-button"];
 
-export const QWEN_ASSISTANT_BLOCK_SELECTOR = "pre.qwen-markdown-code";
+export const QWEN_BLOCK_SELECTORS = [
+  "pre.qwen-markdown-code",
+  ".qwen-chat-message-user .user-message-content"
+];
+
+export const QWEN_ASSISTANT_BLOCK_SELECTOR = QWEN_BLOCK_SELECTORS.join(",");
 
 export const QWEN_CODE_HEADER_SELECTOR = ".qwen-markdown-code-header > div:first-child";
 

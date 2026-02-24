@@ -557,7 +557,7 @@ async function executeToolCall(input: {
         site
       });
     }
-    return successResult(committed, randomUUID(), false);
+    return compactMutationSuccessResult(toolName, committed, randomUUID(), false);
   }
 
   if (toolName === "fs.writeBatch") {
@@ -583,7 +583,7 @@ async function executeToolCall(input: {
         site
       });
     }
-    return successResult(committed, randomUUID(), false);
+    return compactMutationSuccessResult(toolName, committed, randomUUID(), false);
   }
 
   if (toolName === "process.run") {
@@ -630,6 +630,27 @@ function successResult(data: unknown, auditId: string, truncated: boolean): McpT
       {
         type: "text",
         text: JSON.stringify(data, null, 2)
+      }
+    ],
+    meta: {
+      auditId,
+      truncated
+    }
+  };
+}
+
+function compactMutationSuccessResult(
+  toolName: "fs.write" | "fs.writeBatch",
+  data: unknown,
+  auditId: string,
+  truncated: boolean
+): McpToolCallResult {
+  const message = toolName === "fs.writeBatch" ? "WRITE_BATCH_SUCCESS" : "WRITE_SUCCESS";
+  return {
+    content: [
+      {
+        type: "text",
+        text: message
       }
     ],
     meta: {

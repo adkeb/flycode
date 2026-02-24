@@ -3,7 +3,7 @@
  * Implements Qwen-specific block extraction, controlled-textarea injection, button-first auto submit,
  * and summary masking without mutating Monaco internals.
  */
-import type { SiteAdapter, AssistantBlock, AssistantBlockKind, SubmitOutcome } from "../common/types.js";
+import type { SiteAdapter, AssistantBlock, AssistantBlockKind, AssistantBlockSource, SubmitOutcome } from "../common/types.js";
 import { normalizeBlockText, normalizeLines } from "../common/text-normalize.js";
 import {
   QWEN_ASSISTANT_BLOCK_SELECTOR,
@@ -111,27 +111,43 @@ export class QwenSiteAdapter implements SiteAdapter {
   collectAssistantBlocks(): AssistantBlock[] {
     const nodes = Array.from(document.querySelectorAll(QWEN_ASSISTANT_BLOCK_SELECTOR));
     const blocks: AssistantBlock[] = [];
+    const dedupe = new Set<HTMLElement>();
     for (const node of nodes) {
       if (!(node instanceof HTMLElement)) {
         continue;
       }
-      if (node.closest("textarea, [contenteditable='true'], input")) {
+      const element = this.normalizeBlockNode(node);
+      if (!element) {
         continue;
       }
+      if (element.closest("textarea, [contenteditable='true'], input")) {
+        continue;
+      }
+      if (dedupe.has(element)) {
+        continue;
+      }
+      dedupe.add(element);
 
-      const headerText = normalizeBlockText(node.querySelector(QWEN_CODE_HEADER_SELECTOR)?.textContent ?? "");
-      const bodyNode = node.querySelector(QWEN_CODE_BODY_SELECTOR);
-      const text = this.extractCodeText(bodyNode instanceof HTMLElement ? bodyNode : node);
+      const source = resolveQwenBlockSource(element);
+
+      const headerText = normalizeBlockText(element.querySelector(QWEN_CODE_HEADER_SELECTOR)?.textContent ?? "");
+      const bodyNode = element.querySelector(QWEN_CODE_BODY_SELECTOR);
+      const text =
+        bodyNode instanceof HTMLElement
+          ? this.extractCodeText(bodyNode)
+          : normalizeBlockText(element.textContent ?? "");
       const kind = detectQwenBlockKind({
         headerText,
         bodyClassName: bodyNode instanceof HTMLElement ? bodyNode.className : "",
         text
       });
+      const normalizedKind = source === "user" && kind === "mcp-request" ? "unknown" : kind;
 
       blocks.push({
-        node,
-        kind,
-        text
+        node: element,
+        kind: normalizedKind,
+        text,
+        source
       });
     }
     return blocks;
@@ -222,6 +238,19 @@ export class QwenSiteAdapter implements SiteAdapter {
     return normalizeBlockText(root.textContent ?? "");
   }
 
+  private normalizeBlockNode(node: HTMLElement): HTMLElement | null {
+    if (node.tagName === "SPAN" && node.parentElement?.classList.contains("user-message-content")) {
+      return node.parentElement;
+    }
+    if (node.tagName === "CODE") {
+      const pre = node.closest("pre");
+      if (pre instanceof HTMLElement) {
+        return pre;
+      }
+    }
+    return node;
+  }
+
   private async waitForSubmitSignal(beforeUserCount: number, beforeValue: string, timeoutMs: number): Promise<boolean> {
     const started = Date.now();
     const normalizedBefore = beforeValue.trim();
@@ -243,6 +272,16 @@ export class QwenSiteAdapter implements SiteAdapter {
   }
 }
 
+function resolveQwenBlockSource(node: HTMLElement): AssistantBlockSource {
+  if (node.closest(".qwen-chat-message-user")) {
+    return "user";
+  }
+  if (node.closest(".qwen-chat-message-assistant")) {
+    return "assistant";
+  }
+  return "unknown";
+}
+
 export function createQwenAdapter(): SiteAdapter {
   return new QwenSiteAdapter();
 }
@@ -250,18 +289,18 @@ export function createQwenAdapter(): SiteAdapter {
 function detectQwenBlockKind(input: { headerText: string; bodyClassName: string; text: string }): AssistantBlockKind {
   const header = input.headerText.toLowerCase();
   const className = input.bodyClassName.toLowerCase();
-  const text = input.text.toLowerCase();
+  const text = normalizeBlockText(input.text).toLowerCase();
 
-  if (header.includes("mcp-request") || className.includes("mcp-request") || text.startsWith("mcp-request\n")) {
+  if (header.includes("mcp-request") || className.includes("mcp-request") || /^`{3,}\s*mcp-request\b/.test(text) || /^mcp-request\s*\n/.test(text)) {
     return "mcp-request";
   }
-  if (header.includes("mcp-response") || className.includes("mcp-response") || text.startsWith("mcp-response\n")) {
+  if (header.includes("mcp-response") || className.includes("mcp-response") || /^`{3,}\s*mcp-response\b/.test(text) || /^mcp-response\s*\n/.test(text)) {
     return "mcp-response";
   }
-  if (header.includes("flycode-result") || className.includes("flycode-result") || text.startsWith("flycode-result\n")) {
+  if (header.includes("flycode-result") || className.includes("flycode-result") || /^`{3,}\s*flycode-result\b/.test(text) || /^flycode-result\s*\n/.test(text)) {
     return "flycode-result";
   }
-  if (header.includes("flycode-upload") || className.includes("flycode-upload") || text.startsWith("flycode-upload\n")) {
+  if (header.includes("flycode-upload") || className.includes("flycode-upload") || /^`{3,}\s*flycode-upload\b/.test(text) || /^flycode-upload\s*\n/.test(text)) {
     return "flycode-upload";
   }
   return "unknown";
