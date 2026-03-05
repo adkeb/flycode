@@ -8,6 +8,8 @@ export const QWEN_HOSTS = ["chat.qwen.ai"];
 export const QWEN_INPUT_SELECTORS = ["textarea.message-input-textarea", "textarea"];
 
 export const QWEN_SEND_BUTTON_SELECTORS = [
+  ".message-input-right-button-send button",
+  "button.omni-button-content-btn",
   "button.send-button",
   "button[data-testid='send-button']",
   "button[aria-label*='发送']",
@@ -16,8 +18,8 @@ export const QWEN_SEND_BUTTON_SELECTORS = [
 ];
 
 export const QWEN_BLOCK_SELECTORS = [
-  "pre.qwen-markdown-code",
-  ".qwen-chat-message-user .user-message-content"
+  ".qwen-chat-message-assistant",
+  ".qwen-chat-message-user"
 ];
 
 export const QWEN_ASSISTANT_BLOCK_SELECTOR = QWEN_BLOCK_SELECTORS.join(",");

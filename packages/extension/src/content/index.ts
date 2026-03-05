@@ -1,76 +1,43 @@
 /**
- * FlyCode Note: MCP-only content script
- * Watches AI output for mcp-request blocks, executes via background,
- * injects mcp-response back to chat, and compacts rendered result blocks.
+ * FlyCode Note: V4 bridge content script (capture-only)
+ * Only captures Qwen/DeepSeek chat messages and reports them to desktop app.
  */
-import type { ConfirmationEntry, McpRequestEnvelope, McpResponseEnvelope } from "@flycode/shared-types";
-import { parseMcpRequestBlock } from "./mcp-parser.js";
-import { installUploadLauncher } from "./upload-launcher.js";
-import { DEFAULT_SETTINGS, type ExtensionSettings } from "../shared/types.js";
+import type { BridgeChatCaptureFrame, BridgeClientFrame, BridgeServerFrame, SiteId } from "@flycode/shared-types";
+import { DEFAULT_SETTINGS, type ExtensionSettings, type TabContextResponse } from "../shared/types.js";
 import { resolveSiteAdapter } from "../site-adapters/registry.js";
-import type { AssistantBlock } from "../site-adapters/common/types.js";
-import {
-  formatSummary,
-  isFlycodeUploadPayload,
-  parseFlycodeResultSummary,
-  parseMcpResponseSummary
-} from "../site-adapters/common/summary-protocol.js";
 
 const adapter = resolveSiteAdapter();
+const BRIDGE_PROTOCOL_VERSION = 4;
+
+const FRONT_DEDUPE_STORAGE_KEY = "flycode.bridge.frontDedupe.v1";
 
 let settings: ExtensionSettings = { ...DEFAULT_SETTINGS };
+let tabContext: { tabId: number; windowId: number; url?: string; title?: string } | null = null;
+
+let ws: WebSocket | null = null;
+let reconnectTimer: number | undefined;
+let pingTimer: number | undefined;
+let reconnectAttempts = 0;
+
+const outboundQueue: BridgeClientFrame[] = [];
+
 let scanTimer: number | undefined;
-let maskTimer: number | undefined;
-let busy = false;
-let processedBlocks = new WeakSet<HTMLElement>();
-let lastConversationId = adapter.conversationId();
-let pendingAutoSendTimer: number | undefined;
-let pendingAutoSendId: string | null = null;
-let pendingAutoSendRetries = 0;
-type DebugStage =
-  | "bootstrap"
-  | "scan.start"
-  | "scan.skip"
-  | "scan.candidate"
-  | "scan.parse"
-  | "scan.execute"
-  | "execute.result"
-  | "inject"
-  | "submit"
-  | "mask";
-type DebugEntry = {
-  ts: string;
-  stage: DebugStage;
-  site: string;
-  conversation: string;
-  detail: string;
-  data?: Record<string, unknown>;
-};
-const debugLog: DebugEntry[] = [];
-const MAX_DEBUG_LOG = 500;
-const executionLedger = new Set<string>();
-const executionOrder: string[] = [];
-const MAX_EXECUTION_LEDGER = 1500;
-const executionMeta = new Map<string, { method: string; tool?: string }>();
-const legacyNoticeConversations = new Set<string>();
-const DEBUG_BRIDGE_REQ = "flycode-debug-req";
-const DEBUG_BRIDGE_RES = "flycode-debug-res";
+let currentConversationId = "";
+
+const frontDedupe = new Map<string, string[]>();
+const frontDedupeSet = new Map<string, Set<string>>();
+const recentTextDedupe = new Map<string, Map<string, number>>();
+const hiddenToolEchoLedger = new Map<string, Array<{ fullHash: string; prefixHash: string; expiresAt: number }>>();
+const hiddenToolEchoMuteUntil = new Map<string, number>();
 
 void bootstrap();
 
 async function bootstrap(): Promise<void> {
-  pushDebug("bootstrap", "content script bootstrap", { site: adapter.id });
   await loadSettings();
-  loadLedger();
+  await loadTabContext();
+  await loadFrontDedupe();
 
-  installUploadLauncher({
-    getSettings: () => settings,
-    onPayloadReady: (payload) => {
-      void injectToInput(payload);
-    },
-    onStatus: (message, isError) => showFloatingStatus(message, isError)
-  });
-  installPageDebugBridge();
+  currentConversationId = normalizeConversationKey(adapter.conversationId());
 
   chrome.storage.onChanged.addListener((changes, area) => {
     if (area !== "local" || !changes.flycodeSettings) {
@@ -80,13 +47,12 @@ async function bootstrap(): Promise<void> {
       ...DEFAULT_SETTINGS,
       ...(changes.flycodeSettings.newValue as Partial<ExtensionSettings>)
     };
-    scheduleScan(120);
-    scheduleMask(120);
+    reconnectNow();
   });
 
   const observer = new MutationObserver(() => {
-    scheduleScan(260);
-    scheduleMask(220);
+    scheduleScan(240);
+    maybeReconnectOnConversationChange();
   });
 
   if (document.body) {
@@ -98,109 +64,12 @@ async function bootstrap(): Promise<void> {
   }
 
   window.setInterval(() => {
-    scheduleScan(400);
-    scheduleMask(300);
-  }, 1500);
-  window.setInterval(() => {
-    tryPendingAutoSend();
-  }, 2000);
+    scheduleScan(360);
+    maybeReconnectOnConversationChange();
+  }, 1600);
 
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) {
-      scheduleScan(80);
-      scheduleMask(80);
-      void tryPendingAutoSend();
-    }
-  });
-
-  window.addEventListener("focus", () => {
-    scheduleScan(80);
-    scheduleMask(80);
-    void tryPendingAutoSend();
-  });
-
-  primeExistingRequests();
-  scheduleScan(500);
-  scheduleMask(700);
-  installDebugApi();
-}
-
-type DebugBridgeMessage = {
-  channel: string;
-  id: string;
-  action: string;
-};
-
-function installPageDebugBridge(): void {
-  window.addEventListener("message", (event: MessageEvent<DebugBridgeMessage>) => {
-    if (event.source !== window || !event.data || event.data.channel !== DEBUG_BRIDGE_REQ) {
-      return;
-    }
-    const { id, action } = event.data;
-    void handleDebugBridgeAction(id, action);
-  });
-
-  const script = document.createElement("script");
-  script.src = chrome.runtime.getURL("page-debug-bridge.js");
-  script.async = false;
-  script.onload = () => script.remove();
-  (document.documentElement || document.head || document.body).appendChild(script);
-}
-
-async function handleDebugBridgeAction(id: string, action: string): Promise<void> {
-  try {
-    let result: unknown;
-    switch (action) {
-      case "getSettings":
-        result = { ...settings };
-        break;
-      case "runScan":
-        await runScan();
-        result = true;
-        break;
-      case "runMask":
-      case "runResultMask":
-        maskRenderedResponses();
-        result = true;
-        break;
-      case "getExecutionLedger":
-        result = [...executionOrder];
-        break;
-      case "getLogs":
-        result = [...debugLog];
-        break;
-      case "clearLogs":
-        debugLog.length = 0;
-        result = true;
-        break;
-      case "dump":
-        result = {
-          site: adapter.id,
-          conversationId: adapter.conversationId(),
-          hidden: document.hidden,
-          url: location.href,
-          settings,
-          executionLedgerSize: executionOrder.length,
-          pendingAutoSendId,
-          pendingAutoSendRetries,
-          logs: [...debugLog]
-        };
-        break;
-      default:
-        throw new Error(`Unsupported debug action: ${action}`);
-    }
-    window.postMessage({ channel: DEBUG_BRIDGE_RES, id, ok: true, result }, "*");
-  } catch (error) {
-    window.postMessage(
-      {
-        channel: DEBUG_BRIDGE_RES,
-        id,
-        ok: false,
-        error: error instanceof Error ? error.message : String(error)
-      },
-      "*"
-    );
-  }
+  connectWebsocket();
+  scheduleScan(600);
 }
 
 async function loadSettings(): Promise<void> {
@@ -217,10 +86,44 @@ async function loadSettings(): Promise<void> {
   }
 }
 
-function scheduleScan(delayMs: number): void {
-  if (!settings.autoToolEnabled) {
-    return;
+async function loadTabContext(): Promise<void> {
+  try {
+    const response = (await chrome.runtime.sendMessage({ type: "FLYCODE_GET_TAB_CONTEXT" })) as TabContextResponse;
+    if (!response?.ok || typeof response.tabId !== "number" || typeof response.windowId !== "number") {
+      throw new Error(response?.message ?? "tab context unavailable");
+    }
+    tabContext = {
+      tabId: response.tabId,
+      windowId: response.windowId,
+      url: response.url,
+      title: response.title
+    };
+  } catch {
+    tabContext = null;
   }
+}
+
+async function loadFrontDedupe(): Promise<void> {
+  try {
+    const stored = await chrome.storage.local.get(FRONT_DEDUPE_STORAGE_KEY);
+    const raw = stored[FRONT_DEDUPE_STORAGE_KEY] as Record<string, string[]> | undefined;
+    if (!raw || typeof raw !== "object") {
+      return;
+    }
+    for (const [sessionId, keys] of Object.entries(raw)) {
+      if (!Array.isArray(keys)) continue;
+      const filtered = keys
+        .filter((item): item is string => typeof item === "string")
+        .slice(-getFrontDedupeLimit());
+      frontDedupe.set(sessionId, filtered);
+      frontDedupeSet.set(sessionId, new Set(filtered));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function scheduleScan(delayMs: number): void {
   if (scanTimer !== undefined) {
     window.clearTimeout(scanTimer);
   }
@@ -229,204 +132,590 @@ function scheduleScan(delayMs: number): void {
   }, delayMs);
 }
 
-function scheduleMask(delayMs: number): void {
-  if (!settings.compactResultDisplayEnabled) {
+function maybeReconnectOnConversationChange(): void {
+  const nextConversation = normalizeConversationKey(adapter.conversationId());
+  if (nextConversation === currentConversationId) {
     return;
   }
-  if (maskTimer !== undefined) {
-    window.clearTimeout(maskTimer);
-  }
-  maskTimer = window.setTimeout(() => {
-    maskRenderedResponses();
-  }, delayMs);
+  currentConversationId = nextConversation;
+  reconnectNow();
 }
 
-function primeExistingRequests(): void {
-  const blocks = adapter.collectAssistantBlocks();
-  const latestAssistantRange = findLatestAssistantMessageRange(blocks);
-  for (let idx = 0; idx < blocks.length; idx += 1) {
-    const block = blocks[idx];
-    if (
-      latestAssistantRange &&
-      idx >= latestAssistantRange.start &&
-      idx <= latestAssistantRange.end
-    ) {
-      // Keep latest assistant message unresolved; it may be the one that needs execution.
+function reconnectNow(): void {
+  if (reconnectTimer !== undefined) {
+    window.clearTimeout(reconnectTimer);
+    reconnectTimer = undefined;
+  }
+  closeWebsocket();
+  connectWebsocket();
+}
+
+function connectWebsocket(): void {
+  if (!tabContext) {
+    void loadTabContext().then(() => {
+      if (!tabContext) {
+        scheduleReconnect();
+        return;
+      }
+      connectWebsocket();
+    });
+    return;
+  }
+
+  const site = adapter.id;
+  if (site !== "qwen" && site !== "deepseek") {
+    return;
+  }
+
+  const conversationId = normalizeConversationKey(adapter.conversationId());
+  currentConversationId = conversationId;
+
+  let wsUrl: URL;
+  try {
+    wsUrl = buildBridgeWsUrl(settings.appBaseUrl, {
+      role: "web",
+      site,
+      tabId: tabContext.tabId,
+      windowId: tabContext.windowId,
+      conversationId,
+      url: location.href,
+      title: document.title
+    });
+  } catch (error) {
+    showFloatingStatus(`Bridge 地址错误: ${(error as Error).message}`, true);
+    scheduleReconnect();
+    return;
+  }
+
+  try {
+    ws = new WebSocket(wsUrl);
+  } catch {
+    scheduleReconnect();
+    return;
+  }
+
+  ws.addEventListener("open", () => {
+    reconnectAttempts = 0;
+    sendHelloFrame();
+    flushOutboundQueue();
+    startPingTimer();
+  });
+
+  ws.addEventListener("message", (event) => {
+    void handleInboundMessage(event.data);
+  });
+
+  ws.addEventListener("close", () => {
+    stopPingTimer();
+    ws = null;
+    scheduleReconnect();
+  });
+
+  ws.addEventListener("error", () => {
+    stopPingTimer();
+  });
+}
+
+function scheduleReconnect(): void {
+  if (reconnectTimer !== undefined) {
+    return;
+  }
+  reconnectAttempts += 1;
+  const delay = Math.min(12000, 600 + reconnectAttempts * 800);
+  reconnectTimer = window.setTimeout(() => {
+    reconnectTimer = undefined;
+    connectWebsocket();
+  }, delay);
+}
+
+function closeWebsocket(): void {
+  stopPingTimer();
+  if (ws) {
+    try {
+      ws.close();
+    } catch {
+      // ignore
+    }
+    ws = null;
+  }
+}
+
+function startPingTimer(): void {
+  stopPingTimer();
+  pingTimer = window.setInterval(() => {
+    sendFrame({
+      type: "bridge.ping",
+      now: new Date().toISOString()
+    });
+  }, getPingIntervalMs());
+}
+
+function stopPingTimer(): void {
+  if (pingTimer !== undefined) {
+    window.clearInterval(pingTimer);
+    pingTimer = undefined;
+  }
+}
+
+function sendHelloFrame(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  ws.send(
+    JSON.stringify({
+      type: "bridge.hello",
+      role: "web",
+      protocolVersion: BRIDGE_PROTOCOL_VERSION
+    })
+  );
+}
+
+function sendFrame(frame: BridgeClientFrame): void {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(frame));
+    return;
+  }
+
+  outboundQueue.push(frame);
+  while (outboundQueue.length > getOutboundQueueLimit()) {
+    outboundQueue.shift();
+  }
+}
+
+function flushOutboundQueue(): void {
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    return;
+  }
+  while (outboundQueue.length > 0) {
+    const frame = outboundQueue.shift();
+    if (!frame) {
       continue;
     }
-    if (!shouldTryParseAsMcpRequest(block)) {
-      continue;
-    }
-    const parsed = parseMcpRequestBlock(block.text);
-    if (!parsed) {
-      continue;
-    }
-    processedBlocks.add(block.node);
-    // Cold start replay guard: mark existing history as consumed.
-    rememberExecutionKey(buildExecutionKey(block.node, parsed.requestHash, parsed.id));
+    ws.send(JSON.stringify(frame));
   }
 }
 
 async function runScan(): Promise<void> {
-  if (!settings.autoToolEnabled || busy) {
+  const site = adapter.id;
+  if (site !== "qwen" && site !== "deepseek") {
     return;
   }
 
-  maybeResetForConversationChange();
-  busy = true;
+  const sessionId = resolveSessionId(site);
+  if (!sessionId) {
+    return;
+  }
+
+  const blocks = adapter.collectAssistantBlocks();
+  let changed = false;
+
+  for (const block of blocks) {
+    const source = block.source === "user" ? "user" : "assistant";
+    const text = normalizeText(block.text);
+    const thinkText = typeof block.meta?.thinkText === "string" ? normalizeText(block.meta.thinkText) : "";
+    const answerText = typeof block.meta?.answerText === "string" ? normalizeText(block.meta.answerText) : "";
+    const answerMarkdown = typeof block.meta?.answerMarkdown === "string" ? normalizeText(block.meta.answerMarkdown) : "";
+    const webReadSummary = typeof block.meta?.webReadSummary === "string" ? normalizeText(block.meta.webReadSummary) : "";
+    if (!text) {
+      continue;
+    }
+    if (source === "user" && shouldSuppressHiddenToolEcho(sessionId, text)) {
+      continue;
+    }
+
+    const messageAnchor = deriveMessageAnchor(block.node);
+    const key = hashText(`${source}|${messageAnchor}|${text}`);
+    if (hasFrontDedupe(sessionId, key)) {
+      continue;
+    }
+    if (hasRecentTextDuplicate(sessionId, source, text, messageAnchor)) {
+      continue;
+    }
+
+    rememberFrontDedupe(sessionId, key);
+    rememberRecentTextDedupe(sessionId, source, text, messageAnchor);
+    changed = true;
+
+    const frame: BridgeChatCaptureFrame = {
+      type: "bridge.chat.capture",
+      id: randomUUID(),
+      sessionId,
+      createdAt: new Date().toISOString(),
+      payload: {
+        source,
+        text,
+        ...(thinkText ? { thinkText } : {}),
+        ...(answerText ? { answerText } : {}),
+        ...(answerMarkdown ? { answerMarkdown } : {}),
+        ...(webReadSummary ? { webReadSummary } : {}),
+        messageAnchor,
+        url: location.href,
+        title: document.title
+      }
+    };
+
+    sendFrame(frame);
+  }
+
+  if (changed) {
+    await persistFrontDedupe();
+  }
+}
+
+function hasFrontDedupe(sessionId: string, key: string): boolean {
+  const set = frontDedupeSet.get(sessionId);
+  return set ? set.has(key) : false;
+}
+
+function rememberFrontDedupe(sessionId: string, key: string): void {
+  let list = frontDedupe.get(sessionId);
+  let set = frontDedupeSet.get(sessionId);
+
+  if (!list) {
+    list = [];
+    frontDedupe.set(sessionId, list);
+  }
+  if (!set) {
+    set = new Set();
+    frontDedupeSet.set(sessionId, set);
+  }
+
+  if (set.has(key)) {
+    return;
+  }
+
+  list.push(key);
+  set.add(key);
+
+  while (list.length > getFrontDedupeLimit()) {
+    const removed = list.shift();
+    if (!removed) continue;
+    set.delete(removed);
+  }
+}
+
+function hasRecentTextDuplicate(sessionId: string, source: "assistant" | "user", text: string, messageAnchor: string): boolean {
+  const bucket = recentTextDedupe.get(sessionId);
+  if (!bucket) {
+    return false;
+  }
+  const now = Date.now();
+  const recentWindowMs = 6000;
+  for (const [itemKey, ts] of bucket.entries()) {
+    if (now - ts > recentWindowMs) {
+      bucket.delete(itemKey);
+    }
+  }
+  const anchor = String(messageAnchor ?? "").trim() || "(anchor)";
+  const key = `${source}|${anchor}|${hashText(text)}`;
+  const ts = bucket.get(key);
+  return typeof ts === "number" && now - ts <= recentWindowMs;
+}
+
+function rememberRecentTextDedupe(sessionId: string, source: "assistant" | "user", text: string, messageAnchor: string): void {
+  let bucket = recentTextDedupe.get(sessionId);
+  if (!bucket) {
+    bucket = new Map<string, number>();
+    recentTextDedupe.set(sessionId, bucket);
+  }
+  const anchor = String(messageAnchor ?? "").trim() || "(anchor)";
+  bucket.set(`${source}|${anchor}|${hashText(text)}`, Date.now());
+}
+
+function getFrontDedupeLimit(): number {
+  return clampNumber(settings.bridgeFrontDedupeLimit, 200, 20000, 3000);
+}
+
+function getOutboundQueueLimit(): number {
+  return clampNumber(settings.bridgeOutboundQueueLimit, 20, 1000, 200);
+}
+
+function getPingIntervalMs(): number {
+  return clampNumber(settings.bridgePingIntervalMs, 2000, 120000, 15000);
+}
+
+function clampNumber(value: unknown, min: number, max: number, fallback: number): number {
+  const raw = Number(value ?? fallback);
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(raw)));
+}
+
+async function persistFrontDedupe(): Promise<void> {
+  const payload: Record<string, string[]> = {};
+  for (const [sessionId, list] of frontDedupe.entries()) {
+    payload[sessionId] = [...list];
+  }
+  await chrome.storage.local.set({
+    [FRONT_DEDUPE_STORAGE_KEY]: payload
+  });
+}
+
+async function handleInboundMessage(raw: unknown): Promise<void> {
+  let frame: BridgeServerFrame;
   try {
-    const blocks = adapter.collectAssistantBlocks();
-    pushDebug("scan.start", "scan begin", { blockCount: blocks.length });
-
-    const latestAssistantRange = findLatestAssistantMessageRange(blocks);
-    if (!latestAssistantRange) {
-      pushDebug("scan.skip", "no assistant message found");
-      return;
-    }
-
-    if (hasUserBlockAfter(blocks, latestAssistantRange.end)) {
-      pushDebug("scan.skip", "latest assistant message already followed by user block", {
-        range: latestAssistantRange
-      });
-      return;
-    }
-
-    const candidateIndex = findLatestRequestIndexInRange(
-      blocks,
-      latestAssistantRange.start,
-      latestAssistantRange.end
-    );
-    if (candidateIndex < 0) {
-      pushDebug("scan.skip", "latest assistant message has no mcp-request", {
-        range: latestAssistantRange
-      });
-      return;
-    }
-
-    const block = blocks[candidateIndex];
-    if (!block || processedBlocks.has(block.node)) {
-      pushDebug("scan.skip", "latest request block already processed", {
-        candidateIndex
-      });
-      return;
-    }
-
-    pushDebug("scan.candidate", "latest request block in latest assistant message", {
-      index: candidateIndex,
-      range: latestAssistantRange,
-      kind: block.kind,
-      source: block.source,
-      textHead: block.text.slice(0, 120)
-    });
-
-    if (!shouldTryParseAsMcpRequest(block)) {
-      maybeEmitLegacyMigrationNotice(block);
-      processedBlocks.add(block.node);
-      pushDebug("scan.skip", "latest assistant block is not mcp-request");
-      return;
-    }
-
-    const parsed = parseMcpRequestBlock(block.text);
-    if (!parsed) {
-      pushDebug("scan.parse", "parse failed", { index: candidateIndex });
-      if (!mayContainMcpCallText(block.text)) {
-        processedBlocks.add(block.node);
-      }
-      return;
-    }
-
-    pushDebug("scan.parse", "parse ok", { id: parsed.id, method: parsed.envelope.method });
-    processedBlocks.add(block.node);
-
-    const executionKey = buildExecutionKey(block.node, parsed.requestHash, parsed.id);
-    if (executionLedger.has(executionKey)) {
-      pushDebug("scan.skip", "execution key already handled", { id: parsed.id });
-      return;
-    }
-
-    rememberExecutionKey(executionKey);
-    executionMeta.set(parsed.id, {
-      method: parsed.envelope.method,
-      tool:
-        parsed.envelope.method === "tools/call" &&
-        parsed.envelope.params &&
-        typeof parsed.envelope.params === "object"
-          ? String((parsed.envelope.params as { name?: unknown }).name ?? "")
-          : undefined
-    });
-    pushDebug("scan.execute", "executing request", { id: parsed.id, method: parsed.envelope.method });
-    await executeMcpRequest(parsed.envelope);
+    const value = typeof raw === "string" ? raw : String(raw);
+    frame = JSON.parse(value) as BridgeServerFrame;
+  } catch {
     return;
-  } finally {
-    busy = false;
+  }
+
+  if (frame.type === "bridge.ping") {
+    sendFrame({
+      type: "bridge.pong",
+      now: new Date().toISOString()
+    });
+    return;
+  }
+
+  if (frame.type === "bridge.error") {
+    showFloatingStatus(`Bridge 错误: ${frame.message}`, true);
+    return;
+  }
+
+  if (frame.type === "bridge.chat.send") {
+    const expectedSessionId = resolveSessionId(adapter.id);
+    const sessionId = String(frame.sessionId ?? frame.payload?.sessionId ?? expectedSessionId ?? "");
+    const messageId = String(frame.payload?.messageId ?? randomUUID());
+    const text = String(frame.payload?.text ?? "");
+    let ok = false;
+    let reason: string | undefined;
+    const hiddenSend = frame.payload?.hiddenSend === true;
+    const preserveInput = frame.payload?.preserveInput === true;
+    const sourceTag = String(frame.payload?.source ?? "");
+
+    if (!expectedSessionId || !sessionId || expectedSessionId !== sessionId) {
+      reason = "session_mismatch";
+    } else {
+      try {
+        if (hiddenSend && sourceTag === "tool") {
+          rememberHiddenToolEcho(sessionId, text);
+        }
+        ok = await injectAndSubmit(text, { hiddenSend, preserveInput });
+        if (!ok) {
+          reason = "inject_or_submit_failed";
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message.trim() : "";
+        reason = message ? `inject_exception:${message.slice(0, 160)}` : "inject_exception";
+      }
+    }
+
+    sendFrame({
+      type: "bridge.chat.send.ack",
+      id: randomUUID(),
+      sessionId,
+      createdAt: new Date().toISOString(),
+      payload: {
+        sessionId,
+        messageId,
+        ok,
+        ...(ok ? {} : { reason })
+      }
+    });
+    return;
+  }
+
+  if (frame.type === "bridge.tool.result") {
+    const expectedSessionId = resolveSessionId(adapter.id);
+    const sessionId = String(frame.sessionId ?? frame.payload?.sessionId ?? expectedSessionId ?? "");
+    const text = String(frame.payload?.text ?? "");
+
+    if (!expectedSessionId || !sessionId || expectedSessionId !== sessionId) {
+      return;
+    }
+
+    try {
+      const ok = await injectAndSubmit(text);
+      if (!ok) {
+        showFloatingStatus("工具结果已注入输入框，请手动发送", true);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message.trim() : "";
+      showFloatingStatus(message ? `工具结果回填失败: ${message}` : "工具结果回填失败", true);
+    }
+    return;
   }
 }
 
-function findLatestAssistantMessageRange(
-  blocks: AssistantBlock[]
-): { start: number; end: number; messageKey: string } | null {
-  for (let idx = blocks.length - 1; idx >= 0; idx -= 1) {
-    const block = blocks[idx];
-    if (!block || block.source === "user") {
-      continue;
-    }
-
-    const messageKey = deriveMessageAnchor(block.node);
-    let start = idx;
-    let end = idx;
-
-    while (start - 1 >= 0) {
-      const prev = blocks[start - 1];
-      if (!prev || prev.source === "user") {
-        break;
-      }
-      if (deriveMessageAnchor(prev.node) !== messageKey) {
-        break;
-      }
-      start -= 1;
-    }
-
-    while (end + 1 < blocks.length) {
-      const next = blocks[end + 1];
-      if (!next || next.source === "user") {
-        break;
-      }
-      if (deriveMessageAnchor(next.node) !== messageKey) {
-        break;
-      }
-      end += 1;
-    }
-
-    return { start, end, messageKey };
+async function injectAndSubmit(
+  text: string,
+  options?: {
+    hiddenSend?: boolean;
+    preserveInput?: boolean;
   }
-  return null;
+): Promise<boolean> {
+  const trimmed = normalizeText(text);
+  if (!trimmed) {
+    return false;
+  }
+  const hiddenSend = options?.hiddenSend === true;
+  const preserveInput = options?.preserveInput === true;
+  const rawCurrent = adapter.getCurrentText();
+  const current = normalizeText(rawCurrent);
+  const next = hiddenSend ? trimmed : current ? `${current}\n\n${trimmed}` : trimmed;
+  const injected = adapter.injectText(next);
+  if (!injected) {
+    showFloatingStatus("未找到网页输入框", true);
+    return false;
+  }
+
+  const outcome = await adapter.submitAuto();
+  if (hiddenSend && preserveInput) {
+    try {
+      adapter.injectText(rawCurrent ?? "");
+    } catch {
+      // ignore restore errors
+    }
+  }
+  if (!outcome.ok) {
+    showFloatingStatus("消息已注入输入框，请手动发送", true);
+  }
+  return outcome.ok;
 }
 
-function findLatestRequestIndexInRange(
-  blocks: AssistantBlock[],
-  start: number,
-  end: number
-): number {
-  for (let idx = end; idx >= start; idx -= 1) {
-    const block = blocks[idx];
-    if (!block || block.source === "user") {
-      continue;
-    }
-    if (!shouldTryParseAsMcpRequest(block)) {
-      continue;
-    }
-    return idx;
+function resolveSessionId(site: SiteId): string | null {
+  if (!tabContext) {
+    return null;
   }
-  return -1;
+  if (site !== "qwen" && site !== "deepseek") {
+    return null;
+  }
+  const conversationId = normalizeConversationKey(adapter.conversationId());
+  return `${site}:${tabContext.tabId}:${conversationId}`;
 }
 
-function hasUserBlockAfter(blocks: AssistantBlock[], index: number): boolean {
-  for (let idx = index + 1; idx < blocks.length; idx += 1) {
-    if (blocks[idx]?.source === "user") {
+function buildBridgeWsUrl(
+  base: string,
+  input: {
+    role: "web" | "app";
+    site?: "qwen" | "deepseek";
+    tabId?: number;
+    windowId?: number;
+    conversationId?: string;
+    url?: string;
+    title?: string;
+  }
+): URL {
+  const baseUrl = new URL(base);
+  baseUrl.protocol = baseUrl.protocol === "https:" ? "wss:" : "ws:";
+  baseUrl.pathname = "/v1/bridge/ws";
+  baseUrl.searchParams.set("role", input.role);
+
+  if (input.role === "web") {
+    if (!input.site || input.tabId === undefined || input.windowId === undefined || !input.conversationId) {
+      throw new Error("Missing web websocket query params");
+    }
+    baseUrl.searchParams.set("site", input.site);
+    baseUrl.searchParams.set("tabId", String(input.tabId));
+    baseUrl.searchParams.set("windowId", String(input.windowId));
+    baseUrl.searchParams.set("conversationId", input.conversationId);
+    if (input.url) {
+      baseUrl.searchParams.set("url", input.url);
+    }
+    if (input.title) {
+      baseUrl.searchParams.set("title", input.title);
+    }
+  }
+
+  return baseUrl;
+}
+
+function normalizeConversationKey(value: string): string {
+  const key = String(value ?? "").trim();
+  return key || "(unknown-conversation)";
+}
+
+function rememberHiddenToolEcho(sessionId: string, text: string): void {
+  const normalized = normalizeText(text);
+  if (!sessionId || !normalized) {
+    return;
+  }
+  const list = hiddenToolEchoLedger.get(sessionId) ?? [];
+  const prefix = normalized.slice(0, 240);
+  list.push({
+    fullHash: hashText(normalized),
+    prefixHash: hashText(prefix),
+    expiresAt: Date.now() + 180_000
+  });
+  while (list.length > 30) {
+    list.shift();
+  }
+  hiddenToolEchoLedger.set(sessionId, list);
+  hiddenToolEchoMuteUntil.set(sessionId, Date.now() + 45_000);
+}
+
+function shouldSuppressHiddenToolEcho(sessionId: string, text: string): boolean {
+  const list = hiddenToolEchoLedger.get(sessionId);
+  const now = Date.now();
+  const normalized = normalizeText(text);
+  let matched = false;
+
+  if (list && list.length > 0) {
+    const fullHash = hashText(normalized);
+    const prefixHash = hashText(normalized.slice(0, 240));
+    const next = list.filter((item) => {
+      if (item.expiresAt <= now) {
+        return false;
+      }
+      if (!matched && (item.fullHash === fullHash || item.prefixHash === prefixHash)) {
+        matched = true;
+        return false;
+      }
       return true;
+    });
+    if (next.length === 0) {
+      hiddenToolEchoLedger.delete(sessionId);
+    } else {
+      hiddenToolEchoLedger.set(sessionId, next);
     }
   }
-  return false;
+
+  const muteUntil = hiddenToolEchoMuteUntil.get(sessionId) ?? 0;
+  if (muteUntil <= now) {
+    hiddenToolEchoMuteUntil.delete(sessionId);
+  } else if (!matched && looksLikeToolEchoPayload(normalized)) {
+    matched = true;
+  }
+  return matched;
+}
+
+function looksLikeToolEchoPayload(text: string): boolean {
+  const normalized = normalizeText(text);
+  if (normalized.length < 260) {
+    return false;
+  }
+  const hasJsonrpc = /"jsonrpc"\s*:\s*"2\.0"/i.test(normalized);
+  if (!hasJsonrpc) {
+    return false;
+  }
+  const hasToolBody = /"result"\s*:|"error"\s*:|"content"\s*:/i.test(normalized);
+  if (!hasToolBody) {
+    return false;
+  }
+  const hasCodeFence = /```mcp-response|```json|```/i.test(normalized);
+  const hasLargeEscapedText = /\\n|\\t|\\\"/.test(normalized);
+  return hasCodeFence || hasLargeEscapedText || normalized.length > 1200;
+}
+
+function normalizeText(value: string): string {
+  return value.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n").trim();
+}
+
+function deriveMessageAnchor(node: HTMLElement): string {
+  const messageRoot = node.closest("[data-message-id], [data-msg-id], [data-id], ._81e7b5e, .qwen-chat-message-assistant, .qwen-chat-message-user");
+  if (messageRoot instanceof HTMLElement) {
+    const id = messageRoot.getAttribute("data-message-id");
+    if (id) return `msg:data-message-id:${id}`;
+    const msgId = messageRoot.getAttribute("data-msg-id");
+    if (msgId) return `msg:data-msg-id:${msgId}`;
+    const dataId = messageRoot.getAttribute("data-id");
+    if (dataId) return `msg:data-id:${dataId}`;
+    if (messageRoot.id) return `msg:id:${messageRoot.id}`;
+    return `msg:${deriveBlockAnchor(messageRoot)}`;
+  }
+  return `msg:${deriveBlockAnchor(node)}`;
 }
 
 function deriveBlockAnchor(node: HTMLElement): string {
@@ -474,327 +763,21 @@ function deriveBlockAnchor(node: HTMLElement): string {
   return `path:${pathParts.join(">")}`;
 }
 
-function deriveMessageAnchor(node: HTMLElement): string {
-  const messageRoot = node.closest(
-    "[data-message-id], [data-msg-id], [data-id], ._81e7b5e, .ds-message, .qwen-chat-message-assistant, .qwen-chat-message-user, [data-message-author-role]"
-  );
-  if (messageRoot instanceof HTMLElement) {
-    const id = messageRoot.getAttribute("data-message-id");
-    if (id) return `msg:data-message-id:${id}`;
-    const msgId = messageRoot.getAttribute("data-msg-id");
-    if (msgId) return `msg:data-msg-id:${msgId}`;
-    const dataId = messageRoot.getAttribute("data-id");
-    if (dataId) return `msg:data-id:${dataId}`;
-    if (messageRoot.id) return `msg:id:${messageRoot.id}`;
-    return `msg:${deriveBlockAnchor(messageRoot)}`;
-  }
-  return `msg:${deriveBlockAnchor(node)}`;
-}
-
-function shouldTryParseAsMcpRequest(block: AssistantBlock): boolean {
-  if (block.source === "user") {
-    return false;
-  }
-  if (block.kind === "mcp-request") {
-    return true;
-  }
-  if (block.kind !== "unknown") {
-    return false;
-  }
-  const normalized = block.text.replace(/\u00a0/g, " ").replace(/\r\n/g, "\n").trim().toLowerCase();
-  return normalized.startsWith("```mcp-request") || normalized.startsWith("mcp-request");
-}
-
-function mayContainMcpCallText(text: string): boolean {
-  const raw = text.toLowerCase();
-  if (raw.includes("mcp-request")) {
-    return true;
-  }
-  if (/"method"\s*:\s*"tools\/call"/i.test(raw)) {
-    return true;
-  }
-  if (/"method"\s*:\s*"initialize"/i.test(raw)) {
-    return true;
-  }
-  if (/"method"\s*:\s*"tools\/list"/i.test(raw)) {
-    return true;
-  }
-  return false;
-}
-
-function maybeEmitLegacyMigrationNotice(block: AssistantBlock): void {
-  if (block.source === "user") {
-    return;
-  }
-  const text = block.text;
-  if (!text.includes("flycode-call")) {
-    return;
-  }
-  const conversation = adapter.conversationId();
-  if (legacyNoticeConversations.has(conversation)) {
-    return;
-  }
-  legacyNoticeConversations.add(conversation);
-  void injectToInput(
-    [
-      "```mcp-response",
-      JSON.stringify(
-        {
-          jsonrpc: "2.0",
-          id: "migration-notice",
-          error: {
-            code: -32000,
-            message: "FlyCode V2 已升级为 MCP-only，请改用 mcp-request 协议。"
-          }
-        },
-        null,
-        2
-      ),
-      "```"
-    ].join("\n")
-  );
-}
-
-async function executeMcpRequest(envelope: McpRequestEnvelope): Promise<void> {
-  const response = (await chrome.runtime.sendMessage({
-    type: "FLYCODE_MCP_EXECUTE",
-    site: adapter.id,
-    envelope
-  })) as { ok: boolean; response?: McpResponseEnvelope; message?: string };
-
-  if (!response?.ok || !response.response) {
-    pushDebug("execute.result", "mcp execute failed", { id: envelope.id, message: response?.message ?? "unknown" });
-    await injectToInput(formatErrorResponse(envelope.id, response?.message ?? "MCP execute failed"));
-    return;
-  }
-  pushDebug("execute.result", "mcp execute success", { id: envelope.id });
-
-  let finalResponse = response.response;
-  const pendingId = getPendingConfirmationId(finalResponse);
-  if (pendingId) {
-    finalResponse = await waitForConfirmationAndRetry(envelope, pendingId, finalResponse);
-  }
-
-  await injectToInput(formatResponse(finalResponse));
-}
-
-async function waitForConfirmationAndRetry(
-  envelope: McpRequestEnvelope,
-  confirmationId: string,
-  currentResponse: McpResponseEnvelope
-): Promise<McpResponseEnvelope> {
-  const timeoutAt = Date.now() + 125_000;
-  while (Date.now() < timeoutAt) {
-    const status = (await chrome.runtime.sendMessage({
-      type: "FLYCODE_CONFIRMATION_GET",
-      id: confirmationId
-    })) as { ok: boolean; confirmation?: ConfirmationEntry };
-
-    if (status?.ok && status.confirmation) {
-      const state = status.confirmation.status;
-      if (state === "approved") {
-        const retryEnvelope = withConfirmationId(envelope, confirmationId);
-        const retried = (await chrome.runtime.sendMessage({
-          type: "FLYCODE_MCP_EXECUTE",
-          site: adapter.id,
-          envelope: retryEnvelope
-        })) as { ok: boolean; response?: McpResponseEnvelope; message?: string };
-        if (retried?.ok && retried.response) {
-          return retried.response;
-        }
-        return errorEnvelope(envelope.id, retried?.message ?? "Retry after confirmation failed");
-      }
-      if (state === "rejected" || state === "timeout") {
-        return errorEnvelope(envelope.id, `Confirmation ${state}`);
-      }
-    }
-    await sleep(1200);
-  }
-  return currentResponse;
-}
-
-function withConfirmationId(envelope: McpRequestEnvelope, confirmationId: string): McpRequestEnvelope {
-  if (envelope.method !== "tools/call") {
-    return envelope;
-  }
-  const params = (envelope.params && typeof envelope.params === "object" ? envelope.params : {}) as Record<string, unknown>;
-  return {
-    ...envelope,
-    params: {
-      ...params,
-      confirmationId
-    }
-  };
-}
-
-function formatResponse(response: McpResponseEnvelope): string {
-  return ["```mcp-response", JSON.stringify(response, null, 2), "```"].join("\n");
-}
-
-function formatErrorResponse(id: string | number, message: string): string {
-  return formatResponse(errorEnvelope(id, message));
-}
-
-function errorEnvelope(id: string | number, message: string): McpResponseEnvelope {
-  return {
-    jsonrpc: "2.0",
-    id,
-    error: {
-      code: -32000,
-      message
-    }
-  };
-}
-
-function getPendingConfirmationId(response: McpResponseEnvelope): string | null {
-  const result = response.result as { meta?: { pendingConfirmationId?: unknown } } | undefined;
-  if (!result || !result.meta || typeof result.meta.pendingConfirmationId !== "string") {
-    return null;
-  }
-  return result.meta.pendingConfirmationId;
-}
-
-async function injectToInput(text: string): Promise<void> {
-  const current = adapter.getCurrentText().trim();
-  const next = current ? `${current}\n\n${text}` : text;
-  pushDebug("inject", "inject response to input", {
-    hasCurrentInput: Boolean(current),
-    textHead: text.slice(0, 120)
-  });
-  const ok = adapter.injectText(next);
-  if (!ok) {
-    pushDebug("inject", "inject failed: input not found");
-    showFloatingStatus("未找到输入框，无法注入结果。", true);
-    return;
-  }
-
-  if (settings.autoToolAutoSend) {
-    await sleep(40);
-    const outcome = await adapter.submitAuto();
-    pushDebug("submit", "submit outcome", {
-      ok: outcome.ok,
-      method: outcome.method,
-      attempts: outcome.attempts,
-      hidden: document.hidden
-    });
-    if (!outcome.ok) {
-      markPendingAutoSend(next);
-      showFloatingStatus("结果已注入输入框，但未自动发送，请手动点击发送。", true);
-    } else {
-      clearPendingAutoSend();
-    }
-  }
-
-  scheduleMask(80);
-  scheduleMask(280);
-  scheduleMask(700);
-}
-
-function markPendingAutoSend(injectedText: string): void {
-  pendingAutoSendId = extractResponseId(injectedText);
-  pendingAutoSendRetries = 0;
-  schedulePendingAutoSendRetry(1800);
-}
-
-function clearPendingAutoSend(): void {
-  pendingAutoSendId = null;
-  pendingAutoSendRetries = 0;
-  if (pendingAutoSendTimer !== undefined) {
-    window.clearTimeout(pendingAutoSendTimer);
-    pendingAutoSendTimer = undefined;
+function randomUUID(): string {
+  try {
+    return crypto.randomUUID();
+  } catch {
+    return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   }
 }
 
-function schedulePendingAutoSendRetry(delayMs: number): void {
-  if (pendingAutoSendTimer !== undefined) {
-    window.clearTimeout(pendingAutoSendTimer);
+function hashText(value: string): string {
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
   }
-  pendingAutoSendTimer = window.setTimeout(() => {
-    pendingAutoSendTimer = undefined;
-    void tryPendingAutoSend();
-  }, delayMs);
-}
-
-function extractResponseId(text: string): string | null {
-  const match = text.match(/"id"\s*:\s*"([^"\n\r]+)"/);
-  if (match?.[1]) {
-    return match[1];
-  }
-  return null;
-}
-
-function inputContainsPendingResponse(current: string): boolean {
-  const normalized = current.trim();
-  if (!normalized) {
-    return false;
-  }
-  if (!normalized.includes("mcp-response")) {
-    return false;
-  }
-  if (pendingAutoSendId && !normalized.includes(pendingAutoSendId)) {
-    return false;
-  }
-  return true;
-}
-
-async function tryPendingAutoSend(): Promise<void> {
-  if (!settings.autoToolAutoSend || !pendingAutoSendId) {
-    return;
-  }
-  const current = adapter.getCurrentText();
-  if (!inputContainsPendingResponse(current)) {
-    clearPendingAutoSend();
-    return;
-  }
-  const outcome = await adapter.submitAuto();
-  if (outcome.ok) {
-    clearPendingAutoSend();
-    return;
-  }
-
-  pendingAutoSendRetries += 1;
-  // Background tabs can be timer-throttled; keep retrying with bounded cadence.
-  const delay = Math.min(4000 + pendingAutoSendRetries * 400, 12000);
-  schedulePendingAutoSendRetry(delay);
-}
-
-function maskRenderedResponses(): void {
-  const blocks = adapter.collectAssistantBlocks();
-  let masked = 0;
-  for (const block of blocks) {
-    if (block.node.getAttribute("data-flycode-masked") === "1") {
-      continue;
-    }
-    const summary = summarizeAssistantBlock(block);
-    if (!summary) {
-      continue;
-    }
-    adapter.applyMaskedSummary(block.node, summary);
-    masked += 1;
-  }
-  if (masked > 0) {
-    pushDebug("mask", "masked summary blocks", { masked });
-  }
-}
-
-function summarizeAssistantBlock(block: AssistantBlock): string | null {
-  const mcp = parseMcpResponseSummary(block.text, block.kind);
-  if (mcp) {
-    const requestMeta = mcp.id ? executionMeta.get(mcp.id) : undefined;
-    const command = requestMeta?.tool ? `${requestMeta.method}:${requestMeta.tool}` : requestMeta?.method ?? "mcp";
-    return formatSummary(mcp.status, command);
-  }
-
-  const flycode = parseFlycodeResultSummary(block.text, block.kind);
-  if (flycode) {
-    return formatSummary(flycode.status, flycode.command);
-  }
-
-  if (isFlycodeUploadPayload(block.text, block.kind)) {
-    return formatSummary("成功", "文件/目录上传");
-  }
-
-  return null;
+  return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
 function showFloatingStatus(message: string, isError = false): void {
@@ -819,132 +802,4 @@ function showFloatingStatus(message: string, isError = false): void {
   box.style.boxShadow = "0 4px 12px rgba(0, 0, 0, 0.16)";
   document.body.appendChild(box);
   window.setTimeout(() => box.remove(), 3800);
-}
-
-function maybeResetForConversationChange(): void {
-  const current = adapter.conversationId();
-  if (current === lastConversationId) {
-    return;
-  }
-  lastConversationId = current;
-  processedBlocks = new WeakSet();
-  executionMeta.clear();
-}
-
-function buildExecutionKey(node: HTMLElement, requestHash: string, requestId: string): string {
-  const conversationId = normalizeConversationKey(lastConversationId || adapter.conversationId());
-  const messageAnchor = deriveMessageAnchor(node);
-  // Avoid DOM path jitter between rerenders/reopen; key by conversation + message + request semantics.
-  return `${conversationId}|${messageAnchor}|${requestId}|${requestHash}`;
-}
-
-function rememberExecutionKey(key: string): void {
-  if (executionLedger.has(key)) {
-    return;
-  }
-  executionLedger.add(key);
-  executionOrder.push(key);
-  while (executionOrder.length > MAX_EXECUTION_LEDGER) {
-    const oldest = executionOrder.shift();
-    if (oldest) {
-      executionLedger.delete(oldest);
-    }
-  }
-  persistLedger();
-}
-
-function persistLedger(): void {
-  try {
-    sessionStorage.setItem("flycode.mcp.execution.v1", JSON.stringify(executionOrder));
-  } catch {
-    // ignore
-  }
-}
-
-function loadLedger(): void {
-  try {
-    const raw = sessionStorage.getItem("flycode.mcp.execution.v1");
-    if (!raw) {
-      return;
-    }
-    const parsed = JSON.parse(raw) as string[];
-    if (!Array.isArray(parsed)) {
-      return;
-    }
-    for (const key of parsed.slice(-MAX_EXECUTION_LEDGER)) {
-      if (typeof key !== "string") {
-        continue;
-      }
-      executionLedger.add(key);
-      executionOrder.push(key);
-    }
-  } catch {
-    // ignore
-  }
-}
-
-function normalizeConversationKey(conversationId: string): string {
-  const key = conversationId.trim();
-  return key || "(unknown-conversation)";
-}
-
-function installDebugApi(): void {
-  const globalRef = window as unknown as {
-    __flycodeDebug?: unknown;
-  };
-
-  globalRef.__flycodeDebug = {
-    getSettings: () => ({ ...settings }),
-    runScan: () => runScan(),
-    runMask: () => maskRenderedResponses(),
-    runResultMask: () => maskRenderedResponses(),
-    getExecutionLedger: () => [...executionOrder],
-    getLogs: () => [...debugLog],
-    clearLogs: () => {
-      debugLog.length = 0;
-    },
-    dump: () => {
-      const payload = {
-        site: adapter.id,
-        conversationId: adapter.conversationId(),
-        hidden: document.hidden,
-        url: location.href,
-        settings,
-        executionLedgerSize: executionOrder.length,
-        pendingAutoSendId,
-        pendingAutoSendRetries,
-        logs: [...debugLog]
-      };
-      try {
-        console.log("[flycode-debug]", payload);
-      } catch {
-        // ignore
-      }
-      return payload;
-    }
-  };
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
-function pushDebug(stage: DebugStage, detail: string, data?: Record<string, unknown>): void {
-  const entry: DebugEntry = {
-    ts: new Date().toISOString(),
-    stage,
-    site: adapter.id,
-    conversation: adapter.conversationId(),
-    detail,
-    data
-  };
-  debugLog.push(entry);
-  if (debugLog.length > MAX_DEBUG_LOG) {
-    debugLog.splice(0, debugLog.length - MAX_DEBUG_LOG);
-  }
-  try {
-    console.debug("[flycode]", entry);
-  } catch {
-    // ignore
-  }
 }

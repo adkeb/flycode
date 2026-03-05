@@ -1,23 +1,17 @@
 /**
- * FlyCode Note: Minimal options page (V2)
- * Shows app connectivity, syncs per-site keys, and keeps lightweight local toggles.
+ * FlyCode Note: Minimal options page (capture-only bridge mode)
  */
 import type { ExtensionSettings } from "../shared/types.js";
 
 const appBaseUrlInput = document.getElementById("appBaseUrl") as HTMLInputElement;
-const maxInjectTokensInput = document.getElementById("maxInjectTokens") as HTMLInputElement;
-const autoToolEnabledInput = document.getElementById("autoToolEnabled") as HTMLInputElement;
-const autoToolAutoSendInput = document.getElementById("autoToolAutoSend") as HTMLInputElement;
-const compactResultInput = document.getElementById("compactResultDisplayEnabled") as HTMLInputElement;
+const bridgeFrontDedupeLimitInput = document.getElementById("bridgeFrontDedupeLimit") as HTMLInputElement;
+const bridgeOutboundQueueLimitInput = document.getElementById("bridgeOutboundQueueLimit") as HTMLInputElement;
+const bridgePingIntervalMsInput = document.getElementById("bridgePingIntervalMs") as HTMLInputElement;
 const debugInput = document.getElementById("debugLoggingEnabled") as HTMLInputElement;
-const qwenKeyInput = document.getElementById("qwenKey") as HTMLInputElement;
-const deepseekKeyInput = document.getElementById("deepseekKey") as HTMLInputElement;
-const geminiKeyInput = document.getElementById("geminiKey") as HTMLInputElement;
 const statusEl = document.getElementById("status") as HTMLDivElement;
 
 const saveBtn = document.getElementById("saveBtn") as HTMLButtonElement;
 const checkBtn = document.getElementById("checkBtn") as HTMLButtonElement;
-const syncKeyBtn = document.getElementById("syncKeyBtn") as HTMLButtonElement;
 const reloadBtn = document.getElementById("reloadBtn") as HTMLButtonElement;
 
 void init();
@@ -53,16 +47,6 @@ async function init(): Promise<void> {
     await checkConnection();
   });
 
-  syncKeyBtn.addEventListener("click", async () => {
-    const synced = await chrome.runtime.sendMessage({ type: "FLYCODE_SYNC_SITE_KEYS" });
-    if (!synced?.ok) {
-      setStatus(synced?.message ?? "同步站点密钥失败", true);
-      return;
-    }
-    fillForm(synced.settings);
-    setStatus("站点密钥已同步到扩展。", false);
-  });
-
   reloadBtn.addEventListener("click", async () => {
     const response = await chrome.runtime.sendMessage({ type: "FLYCODE_RELOAD_TABS" });
     if (!response?.ok) {
@@ -75,23 +59,18 @@ async function init(): Promise<void> {
 
 function fillForm(settings: ExtensionSettings): void {
   appBaseUrlInput.value = settings.appBaseUrl;
-  maxInjectTokensInput.value = String(settings.maxInjectTokens);
-  autoToolEnabledInput.checked = settings.autoToolEnabled;
-  autoToolAutoSendInput.checked = settings.autoToolAutoSend;
-  compactResultInput.checked = settings.compactResultDisplayEnabled;
+  bridgeFrontDedupeLimitInput.value = String(settings.bridgeFrontDedupeLimit);
+  bridgeOutboundQueueLimitInput.value = String(settings.bridgeOutboundQueueLimit);
+  bridgePingIntervalMsInput.value = String(settings.bridgePingIntervalMs);
   debugInput.checked = settings.debugLoggingEnabled;
-  qwenKeyInput.value = settings.siteKeys.qwen ?? "";
-  deepseekKeyInput.value = settings.siteKeys.deepseek ?? "";
-  geminiKeyInput.value = settings.siteKeys.gemini ?? "";
 }
 
 function readForm(): Partial<ExtensionSettings> {
   return {
     appBaseUrl: appBaseUrlInput.value.trim(),
-    maxInjectTokens: clamp(Number(maxInjectTokensInput.value), 200, 200000),
-    autoToolEnabled: autoToolEnabledInput.checked,
-    autoToolAutoSend: autoToolAutoSendInput.checked,
-    compactResultDisplayEnabled: compactResultInput.checked,
+    bridgeFrontDedupeLimit: clamp(Number(bridgeFrontDedupeLimitInput.value), 200, 20000),
+    bridgeOutboundQueueLimit: clamp(Number(bridgeOutboundQueueLimitInput.value), 20, 1000),
+    bridgePingIntervalMs: clamp(Number(bridgePingIntervalMsInput.value), 2000, 120000),
     debugLoggingEnabled: debugInput.checked
   };
 }
@@ -123,4 +102,3 @@ function clamp(value: number, min: number, max: number): number {
   if (next > max) return max;
   return next;
 }
-

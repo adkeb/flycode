@@ -22,8 +22,12 @@ import { buildApp } from "../src/app.js";
 import { FileTokenManager, InMemoryPairCodeManager } from "../src/security/pairing.js";
 import { DefaultFileService } from "../src/services/file-service.js";
 import { DefaultPathPolicy } from "../src/services/path-policy.js";
+import { InMemoryPolicyRuntimeManager } from "../src/services/policy-runtime-manager.js";
 import { DefaultProcessRunner } from "../src/services/process-runner.js";
 import { DefaultRedactor } from "../src/services/redactor.js";
+import { JsonBridgeStateStore } from "../src/services/bridge-state-store.js";
+import { DefaultBridgeHub } from "../src/services/bridge-hub.js";
+import { createMcpGateway } from "../src/services/mcp-gateway.js";
 import { InMemoryWriteBatchManager } from "../src/services/write-batch-manager.js";
 import { InMemoryWriteManager } from "../src/services/write-manager.js";
 import type { ConfirmationEntry, ConsoleEventEntry, SiteId, SiteKeysResponse } from "@flycode/shared-types";
@@ -138,7 +142,15 @@ class TestAppConfigManager implements AppConfigManager {
       theme: "system",
       logRetentionDays: 30,
       servicePort: 39393,
-      alwaysAllow: {}
+      alwaysAllow: {},
+      bridge: {
+        dedupeMaxEntries: 100_000,
+        sessionReplayLimit: 500,
+        offlineQueuePerSession: 200,
+        toolInterceptDefault: "auto",
+        confirmationWaitTimeoutMs: 125_000,
+        confirmationPollIntervalMs: 1_200
+      }
     };
   }
   async save(next: AppConfigData): Promise<AppConfigData> {
@@ -223,8 +235,9 @@ describe("local-service app", () => {
     const writeManager = new InMemoryWriteManager(policy, pathPolicy, fileService);
     const writeBatchManager = new InMemoryWriteBatchManager(policy, pathPolicy, fileService);
     const processRunner = new DefaultProcessRunner(policy, pathPolicy, redactor);
+    const bridgeStateStore = new JsonBridgeStateStore(appConfigManager);
 
-    const context: ServiceContext = {
+    const context = {
       policy,
       pairCodeManager,
       tokenManager,
@@ -232,6 +245,7 @@ describe("local-service app", () => {
       confirmationManager,
       consoleEventLogger,
       appConfigManager,
+      policyRuntimeManager: new InMemoryPolicyRuntimeManager(policy, async () => {}),
       pathPolicy,
       redactor,
       auditLogger,
@@ -239,7 +253,11 @@ describe("local-service app", () => {
       writeManager,
       writeBatchManager,
       processRunner
-    };
+    } as ServiceContext;
+
+    context.mcpGateway = createMcpGateway(context);
+    context.bridgeStateStore = bridgeStateStore;
+    context.bridgeHub = new DefaultBridgeHub(context, bridgeStateStore, context.mcpGateway);
 
     const { app } = await buildApp(context);
 

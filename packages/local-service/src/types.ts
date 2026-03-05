@@ -67,17 +67,23 @@
  * 这些类型在浏览器扩展和本地服务之间通用
  */
 import type {
+  BridgeClientFrame,
+  BridgeMessageRecord,
+  BridgeServerFrame,
+  BridgeSessionRef,
   ConsoleClearRequest,
   ConsoleClearResult,
-  ConfirmationEntry,      // 确认条目（确认中心使用）
-  ConsoleEventEntry,      // 控制台事件条目（日志使用）
+  ConfirmationEntry, // 确认条目（确认中心使用）
+  ConsoleEventEntry, // 控制台事件条目（日志使用）
+  McpRequestEnvelope,
+  McpResponseEnvelope,
   PolicyRuntimePatch,
   PolicyValidationResult,
-  ReadEncoding,           // 读取编码："utf-8" | "base64" | "hex"
-  SiteId,                 // 站点 ID："qwen" | "deepseek" | "gemini" | "unknown"
-  SiteKeysResponse,       // 站点密钥响应
-  WriteBatchFileInput,    // 批量写入的单个文件输入
-  WriteMode               // 写入模式："overwrite" | "append"
+  ReadEncoding, // 读取编码："utf-8" | "base64" | "hex"
+  SiteId, // 站点 ID："qwen" | "deepseek" | "gemini" | "unknown"
+  SiteKeysResponse, // 站点密钥响应
+  WriteBatchFileInput, // 批量写入的单个文件输入
+  WriteMode // 写入模式："overwrite" | "append"
 } from "@flycode/shared-types";
 
 // =============================================================================
@@ -358,6 +364,15 @@ export interface ServiceContext {
 
   /** 进程执行服务 */
   processRunner: ProcessRunner;
+
+  /** MCP 执行网关（HTTP/Bridge 复用） */
+  mcpGateway: McpGateway;
+
+  /** Bridge 状态存储（持久化去重/消息/离线队列） */
+  bridgeStateStore: BridgeStateStore;
+
+  /** Bridge 连接与路由中心 */
+  bridgeHub: BridgeHub;
 }
 
 /**
@@ -874,6 +889,16 @@ export interface AppConfigData {
 
   /** 始终允许的操作（跳过确认） */
   alwaysAllow: Record<string, boolean>;
+
+  /** Bridge 配置（V3） */
+  bridge: {
+    dedupeMaxEntries: number;
+    sessionReplayLimit: number;
+    offlineQueuePerSession: number;
+    toolInterceptDefault: "auto" | "manual";
+    confirmationWaitTimeoutMs: number;
+    confirmationPollIntervalMs: number;
+  };
 }
 
 /**
@@ -915,6 +940,54 @@ export interface PolicyRuntimeManager {
 
   /** 应用策略 patch（落盘并返回新策略） */
   applyPatch(patch: PolicyRuntimePatch): Promise<PolicyConfig>;
+}
+
+export interface McpGateway {
+  dispatch(site: Exclude<SiteId, "unknown">, envelope: McpRequestEnvelope, traceId: string): Promise<McpResponseEnvelope>;
+  classifyStatus(response: McpResponseEnvelope): "success" | "failed" | "pending";
+}
+
+export interface BridgeStateSnapshot {
+  sessions: BridgeSessionRef[];
+  messagesBySession: Record<string, BridgeMessageRecord[]>;
+  dedupeLedger: string[];
+  pendingOutbound: Record<string, { web: BridgeServerFrame[]; app: BridgeServerFrame[] }>;
+}
+
+export interface BridgeStateStore {
+  loadSnapshot(): Promise<BridgeStateSnapshot>;
+  listSessions(): Promise<BridgeSessionRef[]>;
+  listMessages(sessionId: string, limit?: number): Promise<BridgeMessageRecord[]>;
+  upsertSession(session: BridgeSessionRef): Promise<void>;
+  appendMessage(record: BridgeMessageRecord): Promise<void>;
+  deleteSession(sessionId: string): Promise<boolean>;
+  updateMessageStatus(input: { sessionId: string; messageId: string; status: "queued" | "sent" | "failed" | "done"; reason?: string }): Promise<void>;
+  hasDedupeKey(key: string): Promise<boolean>;
+  rememberDedupeKey(key: string): Promise<void>;
+  enqueueOutbound(sessionId: string, targetRole: "web" | "app", frame: BridgeServerFrame): Promise<void>;
+  dequeueOutbound(sessionId: string, targetRole: "web" | "app"): Promise<BridgeServerFrame[]>;
+}
+
+export interface BridgeHub {
+  bindWebsocket(input: {
+    socket: {
+      send(data: string): void;
+      on(event: "message", listener: (raw: Buffer | string) => void): void;
+      on(event: "close", listener: () => void): void;
+      on(event: "error", listener: (error: Error) => void): void;
+      close(): void;
+      readyState: number;
+    };
+    role: "web" | "app";
+    site?: Exclude<SiteId, "unknown">;
+    tabId?: number;
+    windowId?: number;
+    conversationId?: string;
+    url?: string;
+    title?: string;
+  }): Promise<void>;
+  handleFrame(connectionId: string, frame: BridgeClientFrame): Promise<void>;
+  deleteSession(sessionId: string): Promise<boolean>;
 }
 
 // =============================================================================

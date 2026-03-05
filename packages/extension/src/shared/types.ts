@@ -1,59 +1,24 @@
 /**
- * FlyCode Note: Extension MCP message contracts
- * Defines settings and runtime messages for MCP-only bridge execution.
+ * FlyCode Note: Extension runtime contracts (capture-only bridge mode)
  */
-import type {
-  ConfirmationEntry,
-  McpRequestEnvelope,
-  McpResponseEnvelope,
-  SiteId,
-  SiteKeysResponse
-} from "@flycode/shared-types";
-
-type KnownSiteId = Exclude<SiteId, "unknown">;
 
 export interface ExtensionSettings {
   appBaseUrl: string;
   maxInjectTokens: number;
-  autoToolEnabled: boolean;
-  autoToolAutoSend: boolean;
-  compactResultDisplayEnabled: boolean;
+  bridgeFrontDedupeLimit: number;
+  bridgeOutboundQueueLimit: number;
+  bridgePingIntervalMs: number;
   debugLoggingEnabled: boolean;
-  siteKeys: Partial<Record<KnownSiteId, string>>;
 }
 
 export const DEFAULT_SETTINGS: ExtensionSettings = {
   appBaseUrl: "http://127.0.0.1:39393",
-  maxInjectTokens: 12_000,
-  autoToolEnabled: true,
-  autoToolAutoSend: true,
-  compactResultDisplayEnabled: true,
-  debugLoggingEnabled: false,
-  siteKeys: {}
+  maxInjectTokens: 12000,
+  bridgeFrontDedupeLimit: 3000,
+  bridgeOutboundQueueLimit: 200,
+  bridgePingIntervalMs: 15000,
+  debugLoggingEnabled: false
 };
-
-export interface ExecuteMcpRequest {
-  type: "FLYCODE_MCP_EXECUTE";
-  site: SiteId;
-  envelope: McpRequestEnvelope;
-}
-
-export interface ExecuteMcpResponse {
-  ok: boolean;
-  response?: McpResponseEnvelope;
-  message?: string;
-}
-
-export interface PollConfirmationRequest {
-  type: "FLYCODE_CONFIRMATION_GET";
-  id: string;
-}
-
-export interface PollConfirmationResponse {
-  ok: boolean;
-  confirmation?: ConfirmationEntry;
-  message?: string;
-}
 
 export interface GetSettingsRequest {
   type: "FLYCODE_GET_SETTINGS";
@@ -68,12 +33,12 @@ export interface CheckAppStatusRequest {
   type: "FLYCODE_APP_STATUS";
 }
 
-export interface SyncSiteKeysRequest {
-  type: "FLYCODE_SYNC_SITE_KEYS";
-}
-
 export interface ReloadTabsRequest {
   type: "FLYCODE_RELOAD_TABS";
+}
+
+export interface GetTabContextRequest {
+  type: "FLYCODE_GET_TAB_CONTEXT";
 }
 
 export interface AppStatusResponse {
@@ -83,18 +48,18 @@ export interface AppStatusResponse {
   message?: string;
 }
 
-export interface SyncSiteKeysResponse {
+export interface TabContextResponse {
   ok: boolean;
-  keys?: SiteKeysResponse;
-  settings?: ExtensionSettings;
+  tabId?: number;
+  windowId?: number;
+  url?: string;
+  title?: string;
   message?: string;
 }
 
 export type RuntimeMessage =
-  | ExecuteMcpRequest
-  | PollConfirmationRequest
   | GetSettingsRequest
   | SaveSettingsRequest
   | CheckAppStatusRequest
-  | SyncSiteKeysRequest
-  | ReloadTabsRequest;
+  | ReloadTabsRequest
+  | GetTabContextRequest;

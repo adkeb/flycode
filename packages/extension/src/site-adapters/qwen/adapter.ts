@@ -132,13 +132,17 @@ export class QwenSiteAdapter implements SiteAdapter {
       dedupe.add(element);
 
       const source = resolveQwenBlockSource(element);
+      const contentNode = this.resolveMessageContentNode(element);
 
       const headerText = normalizeBlockText(element.querySelector(QWEN_CODE_HEADER_SELECTOR)?.textContent ?? "");
       const bodyNode = element.querySelector(QWEN_CODE_BODY_SELECTOR);
       const text =
         bodyNode instanceof HTMLElement
           ? this.extractCodeText(bodyNode)
-          : normalizeBlockText(element.textContent ?? "");
+          : normalizeBlockText(contentNode.textContent ?? "");
+      if (!text) {
+        continue;
+      }
       const kind = detectQwenBlockKind({
         headerText,
         bodyClassName: bodyNode instanceof HTMLElement ? bodyNode.className : "",
@@ -263,6 +267,10 @@ export class QwenSiteAdapter implements SiteAdapter {
   }
 
   private normalizeBlockNode(node: HTMLElement): HTMLElement | null {
+    const messageRoot = node.closest(".qwen-chat-message-assistant, .qwen-chat-message-user");
+    if (messageRoot instanceof HTMLElement) {
+      return messageRoot;
+    }
     if (node.tagName === "SPAN" && node.parentElement?.classList.contains("user-message-content")) {
       return node.parentElement;
     }
@@ -293,6 +301,16 @@ export class QwenSiteAdapter implements SiteAdapter {
       await sleep(80);
     }
     return false;
+  }
+
+  private resolveMessageContentNode(root: HTMLElement): HTMLElement {
+    const candidate = root.querySelector(
+      ".qwen-markdown, .markdown-body, .user-message-content, .message-content, [data-testid='message-content']"
+    );
+    if (candidate instanceof HTMLElement) {
+      return candidate;
+    }
+    return root;
   }
 }
 

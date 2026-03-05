@@ -1467,6 +1467,243 @@ export interface ConsoleEventEntry {
 }
 
 // =============================================================================
+// 第九部分：Bridge 协议类型（V4）
+// =============================================================================
+
+export const BRIDGE_PROTOCOL_VERSION = 4 as const;
+
+export type BridgeRole = "web" | "app";
+
+export type BridgeMessageEventType = "bridge.chat.message" | "bridge.chat.send" | "bridge.tool.result";
+
+/**
+ * Session reference used by bridge routing.
+ * sessionId MUST follow: `${site}:${tabId}:${conversationId}`
+ */
+export interface BridgeSessionRef {
+  sessionId: string;
+  site: Exclude<SiteId, "unknown">;
+  tabId: number;
+  windowId: number;
+  conversationId: string;
+  url?: string;
+  title?: string;
+  online: boolean;
+  lastActiveAt: string;
+}
+
+export interface BridgeMessageRecord {
+  id: string;
+  sessionId: string;
+  site: Exclude<SiteId, "unknown">;
+  source: "assistant" | "user" | "app" | "tool";
+  eventType: BridgeMessageEventType;
+  text: string;
+  createdAt: string;
+  messageAnchor?: string;
+  status?: "queued" | "sent" | "failed" | "done";
+  meta?: Record<string, unknown>;
+}
+
+export interface BridgePendingToolDecision {
+  pendingId: string;
+  sessionId: string;
+  envelope: McpRequestEnvelope;
+  messageAnchor?: string;
+  createdAt: string;
+}
+
+export interface BridgeConfigSummary {
+  dedupeMaxEntries: number;
+  sessionReplayLimit: number;
+  offlineQueuePerSession: number;
+  toolInterceptDefault: "auto" | "manual";
+}
+
+export interface BridgeHelloFrame {
+  type: "bridge.hello";
+  role: BridgeRole;
+  protocolVersion: number;
+}
+
+export interface BridgeHelloOkFrame {
+  type: "bridge.hello.ok";
+  role: BridgeRole;
+  now: string;
+  protocolVersion: number;
+}
+
+export interface BridgeSnapshotFrame {
+  type: "bridge.snapshot";
+  sessions: BridgeSessionRef[];
+  messagesBySession: Record<string, BridgeMessageRecord[]>;
+  pendingBySession: Record<string, BridgePendingToolDecision[]>;
+  bridgeConfigSummary: BridgeConfigSummary;
+}
+
+export interface BridgeChatCaptureFrame {
+  type: "bridge.chat.capture";
+  id: string;
+  sessionId?: string;
+  payload: {
+    source: "assistant" | "user";
+    text: string;
+    thinkText?: string;
+    answerText?: string;
+    answerMarkdown?: string;
+    webReadSummary?: string;
+    messageAnchor?: string;
+    url?: string;
+    title?: string;
+  };
+  createdAt: string;
+}
+
+export interface BridgeChatSendFrame {
+  type: "bridge.chat.send";
+  id: string;
+  sessionId: string;
+  payload: {
+    sessionId: string;
+    messageId: string;
+    text: string;
+    hiddenSend?: boolean;
+    preserveInput?: boolean;
+    source?: "app" | "tool";
+  };
+  createdAt: string;
+}
+
+export interface BridgeChatSendAckFrame {
+  type: "bridge.chat.send.ack";
+  id: string;
+  sessionId: string;
+  payload: {
+    sessionId: string;
+    messageId: string;
+    ok: boolean;
+    reason?: string;
+  };
+  createdAt: string;
+}
+
+export interface BridgeChatMessageFrame {
+  type: "bridge.chat.message";
+  id: string;
+  sessionId: string;
+  payload: {
+    sessionId: string;
+    record: BridgeMessageRecord;
+    session?: BridgeSessionRef;
+  };
+  createdAt: string;
+}
+
+export interface BridgeToolPendingFrame {
+  type: "bridge.tool.pending";
+  id: string;
+  sessionId: string;
+  payload: BridgePendingToolDecision;
+  createdAt: string;
+}
+
+export interface BridgeToolPendingResolveFrame {
+  type: "bridge.tool.pending.resolve";
+  id: string;
+  sessionId: string;
+  payload: {
+    pendingId: string;
+    decision: "approve" | "reject";
+    envelope?: McpRequestEnvelope;
+  };
+  createdAt: string;
+}
+
+export interface BridgeToolResultFrame {
+  type: "bridge.tool.result";
+  id: string;
+  sessionId: string;
+  payload: {
+    sessionId: string;
+    envelope: McpResponseEnvelope;
+    text: string;
+    record: BridgeMessageRecord;
+  };
+  createdAt: string;
+}
+
+export interface BridgeSessionUpsertFrame {
+  type: "bridge.session.upsert";
+  id: string;
+  payload: {
+    session: BridgeSessionRef;
+  };
+  createdAt: string;
+}
+
+export interface BridgeSessionOfflineFrame {
+  type: "bridge.session.offline";
+  id: string;
+  payload: {
+    sessionId: string;
+    lastActiveAt: string;
+  };
+  createdAt: string;
+}
+
+export interface BridgeAckFrame {
+  type: "bridge.ack";
+  id: string;
+  ok: boolean;
+  message?: string;
+}
+
+export interface BridgeErrorFrame {
+  type: "bridge.error";
+  message: string;
+  code?: string;
+}
+
+export interface BridgePingFrame {
+  type: "bridge.ping";
+  now: string;
+}
+
+export interface BridgePongFrame {
+  type: "bridge.pong";
+  now: string;
+}
+
+export type BridgeClientFrameV4 =
+  | BridgeHelloFrame
+  | BridgeChatCaptureFrame
+  | BridgeChatSendFrame
+  | BridgeChatSendAckFrame
+  | BridgeToolPendingResolveFrame
+  | BridgeAckFrame
+  | BridgePingFrame
+  | BridgePongFrame;
+
+export type BridgeServerFrameV4 =
+  | BridgeHelloOkFrame
+  | BridgeSnapshotFrame
+  | BridgeChatSendFrame
+  | BridgeChatSendAckFrame
+  | BridgeChatMessageFrame
+  | BridgeToolPendingFrame
+  | BridgeToolResultFrame
+  | BridgeSessionUpsertFrame
+  | BridgeSessionOfflineFrame
+  | BridgeAckFrame
+  | BridgeErrorFrame
+  | BridgePingFrame
+  | BridgePongFrame;
+
+export type BridgeClientFrame = BridgeClientFrameV4;
+
+export type BridgeServerFrame = BridgeServerFrameV4;
+
+// =============================================================================
 // 文件结束
 // =============================================================================
 // 

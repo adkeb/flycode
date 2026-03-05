@@ -3,6 +3,7 @@
  * Builds the HTTP app, wires CORS and unified error handling, and emits audit records for failures.
  */
 import cors from "@fastify/cors";
+import websocket from "@fastify/websocket";
 import Fastify, { type FastifyInstance } from "fastify";
 import { randomUUID } from "node:crypto";
 import { createServiceContext } from "./context.js";
@@ -17,6 +18,7 @@ export async function buildApp(inputContext?: ServiceContext): Promise<{ app: Fa
   await app.register(cors, {
     origin: true
   });
+  await app.register(websocket);
 
   app.setErrorHandler(async (error, request, reply) => {
     const appError = error instanceof AppError ? error : null;

@@ -7,9 +7,12 @@ import { FileTokenManager, InMemoryPairCodeManager } from "./security/pairing.js
 import { FileSiteKeyManager } from "./security/site-keys.js";
 import { JsonAppConfigManager } from "./services/app-config-manager.js";
 import { FileAuditLogger } from "./services/audit.js";
+import { DefaultBridgeHub } from "./services/bridge-hub.js";
+import { JsonBridgeStateStore } from "./services/bridge-state-store.js";
 import { InMemoryConfirmationManager } from "./services/confirmation-center.js";
 import { FileConsoleEventLogger } from "./services/console-log.js";
 import { DefaultFileService } from "./services/file-service.js";
+import { createMcpGateway } from "./services/mcp-gateway.js";
 import { DefaultPathPolicy } from "./services/path-policy.js";
 import { InMemoryPolicyRuntimeManager } from "./services/policy-runtime-manager.js";
 import { DefaultProcessRunner } from "./services/process-runner.js";
@@ -36,8 +39,9 @@ export async function createServiceContext(): Promise<ServiceContext> {
   let writeManager = new InMemoryWriteManager(policy, pathPolicy, fileService);
   let writeBatchManager = new InMemoryWriteBatchManager(policy, pathPolicy, fileService);
   let processRunner = new DefaultProcessRunner(policy, pathPolicy, redactor);
+  const bridgeStateStore = new JsonBridgeStateStore(appConfigManager);
 
-  const context: ServiceContext = {
+  const context = {
     policy,
     pairCodeManager,
     tokenManager,
@@ -69,7 +73,11 @@ export async function createServiceContext(): Promise<ServiceContext> {
     writeManager,
     writeBatchManager,
     processRunner
-  };
+  } as unknown as ServiceContext;
+
+  context.mcpGateway = createMcpGateway(context);
+  context.bridgeStateStore = bridgeStateStore;
+  context.bridgeHub = new DefaultBridgeHub(context, bridgeStateStore, context.mcpGateway);
 
   return context;
 }

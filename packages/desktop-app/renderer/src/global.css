@@ -1,12 +1,31 @@
 :root {
-  --flycode-font-sans: "Noto Sans CJK SC", "Noto Sans SC", "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", "Source Han Sans SC", "SimHei", "SimSun", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-  --flycode-font-mono: "JetBrains Mono", "Cascadia Mono", "Fira Code", "SFMono-Regular", Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  --flycode-font-sans: "Noto Sans SC", "Noto Sans CJK SC", "Microsoft YaHei UI", "PingFang SC", "Source Han Sans SC", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --flycode-font-mono: "JetBrains Mono", "Cascadia Code", "Fira Code", "SFMono-Regular", Menlo, Consolas, monospace;
+
+  --flycode-bg: #f6f8f6;
+  --flycode-surface: #ffffff;
+  --flycode-soft: #edf3ef;
+  --flycode-border: #d4e1d9;
+  --flycode-text: #10211a;
+  --flycode-muted: #5a6f62;
+  --flycode-brand: #1f7a4c;
+  --flycode-brand-soft: #e0f1e7;
+  --flycode-assistant: #ffffff;
+  --flycode-user: #e6f4ea;
+  --flycode-tool: #fff5e8;
+  --flycode-app: #eef2ff;
 }
 
 html,
 body,
 #root {
+  margin: 0;
+  min-height: 100%;
   font-family: var(--flycode-font-sans);
+  background: radial-gradient(circle at 5% 8%, #ecf8ef 0, rgba(236, 248, 239, 0.3) 24%, transparent 46%),
+    radial-gradient(circle at 92% 12%, #fdf0e3 0, rgba(253, 240, 227, 0.45) 22%, transparent 50%),
+    linear-gradient(145deg, #f6f8f6 0%, #edf4f0 100%);
+  color: var(--flycode-text);
 }
 
 .mantine-AppShell-root,
@@ -20,7 +39,9 @@ body,
 .mantine-Card-root,
 .mantine-Accordion-item,
 .mantine-Accordion-control,
-.mantine-Accordion-panel {
+.mantine-Accordion-panel,
+.mantine-Drawer-content,
+.mantine-NavLink-label {
   font-family: var(--flycode-font-sans);
 }
 
@@ -28,4 +49,375 @@ code,
 pre,
 .mantine-Code-root {
   font-family: var(--flycode-font-mono);
+}
+
+.flycode-shell .mantine-AppShell-main {
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+.flycode-shell.is-chat .mantine-AppShell-main {
+  height: 100vh;
+  padding: 8px;
+}
+
+.flycode-shell .mantine-AppShell-navbar {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(8px);
+  border-right: 1px solid var(--flycode-border);
+  transition: opacity 0.18s ease;
+}
+
+.flycode-shell .mantine-AppShell-header {
+  background: rgba(255, 255, 255, 0.8);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--flycode-border);
+  transition: opacity 0.18s ease;
+}
+
+.flycode-shell.is-chat.is-navbar-hidden .mantine-AppShell-navbar,
+.flycode-shell.is-chat.is-header-hidden .mantine-AppShell-header {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.flycode-floating-controls {
+  position: fixed;
+  left: 16px;
+  bottom: 16px;
+  z-index: 320;
+  display: flex;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 999px;
+  border: 1px solid #d6e5dc;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(8px);
+}
+
+.flycode-sidebar {
+  height: 100%;
+}
+
+.flycode-chat-page {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.flycode-chat-page > .flycode-chat-workspace {
+  flex: 1;
+}
+
+.flycode-brand {
+  margin-bottom: 8px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #e6f5eb 0%, #f5fbf7 100%);
+  border: 1px solid #cae8d5;
+}
+
+.flycode-chat-workspace {
+  border: 1px solid var(--flycode-border);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.95);
+  box-shadow: 0 18px 38px rgba(21, 38, 27, 0.08);
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.flycode-chat-grid {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1fr);
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.flycode-chat-grid.is-session-collapsed {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.flycode-session-pane {
+  border: 1px solid var(--flycode-border);
+  border-radius: 14px;
+  background: linear-gradient(180deg, #f7fbf8 0%, #f1f7f3 100%);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.flycode-session-scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+.flycode-session-item {
+  width: 100%;
+  text-align: left;
+  background: #ffffff;
+  border: 1px solid #dce8e0;
+  border-radius: 12px;
+  padding: 9px 10px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.flycode-session-item:hover {
+  border-color: #b7d4c2;
+  transform: translateY(-1px);
+}
+
+.flycode-session-item.is-active {
+  border-color: var(--flycode-brand);
+  background: #ecf8f1;
+  box-shadow: 0 8px 22px rgba(30, 120, 74, 0.14);
+}
+
+.flycode-session-item-title {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.3;
+  color: #123021;
+  margin-bottom: 2px;
+}
+
+.flycode-session-item-sub {
+  font-size: 12px;
+  color: #547061;
+  margin-bottom: 6px;
+}
+
+.flycode-session-item-meta {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #667f72;
+}
+
+.flycode-session-item-meta .online {
+  color: #0a8f53;
+  font-weight: 700;
+}
+
+.flycode-session-item-meta .offline {
+  color: #b45309;
+  font-weight: 700;
+}
+
+.flycode-chat-main {
+  border: 1px solid var(--flycode-border);
+  border-radius: 14px;
+  background: #ffffff;
+  display: flex;
+  flex-direction: column;
+  padding: 12px;
+  min-height: 0;
+}
+
+.flycode-chat-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+}
+
+.flycode-message-list {
+  flex: 1;
+  overflow-y: auto;
+  border: 1px solid #e4ece7;
+  border-radius: 12px;
+  background: linear-gradient(180deg, #f9fcfa 0%, #f5faf7 100%);
+  padding: 12px;
+  min-height: 0;
+  max-height: none;
+}
+
+.flycode-message-row {
+  display: flex;
+  margin-bottom: 10px;
+}
+
+.flycode-message-row.source-app,
+.flycode-message-row.source-user {
+  justify-content: flex-end;
+}
+
+.flycode-message-row.source-assistant,
+.flycode-message-row.source-tool {
+  justify-content: flex-start;
+}
+
+.flycode-message-bubble {
+  max-width: 86%;
+  border-radius: 12px;
+  border: 1px solid #dbe7e0;
+  padding: 10px 11px;
+  box-shadow: 0 8px 18px rgba(27, 44, 33, 0.06);
+}
+
+.flycode-message-bubble.is-assistant {
+  background: var(--flycode-assistant);
+}
+
+.flycode-message-bubble.is-user {
+  background: var(--flycode-user);
+}
+
+.flycode-message-bubble.is-tool {
+  background: var(--flycode-tool);
+}
+
+.flycode-message-bubble.is-app {
+  background: var(--flycode-app);
+}
+
+.flycode-message-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+  color: #132117;
+}
+
+.flycode-md-heading {
+  margin: 2px 0 4px;
+  font-weight: 760;
+  line-height: 1.4;
+  color: #0f2d20;
+}
+
+.flycode-md-heading.level-1 {
+  font-size: 21px;
+}
+
+.flycode-md-heading.level-2 {
+  font-size: 19px;
+}
+
+.flycode-md-heading.level-3,
+.flycode-md-heading.level-4,
+.flycode-md-heading.level-5,
+.flycode-md-heading.level-6 {
+  font-size: 16px;
+}
+
+.flycode-md-list-item {
+  padding-left: 2px;
+}
+
+.flycode-md-blockquote {
+  border-left: 3px solid #b6cec1;
+  background: #f1f7f3;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+.flycode-md-rule {
+  height: 1px;
+  background: #d6e4dc;
+  margin: 6px 0;
+}
+
+.flycode-message-code {
+  margin: 0;
+  padding: 9px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border-radius: 8px;
+  border: 1px solid #d8e2dd;
+  background: #f3f7f5;
+  color: #173325;
+  font-size: 12px;
+}
+
+.flycode-message-code-wrap {
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #d8e2dd;
+}
+
+.flycode-message-code-wrap .flycode-message-code {
+  border: 0;
+  border-radius: 0;
+}
+
+.flycode-message-code-lang {
+  background: #e9f1ed;
+  color: #406255;
+  border-bottom: 1px solid #d8e2dd;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  padding: 4px 8px;
+  text-transform: lowercase;
+}
+
+.flycode-webread-summary {
+  border: 1px solid #d8deff;
+}
+
+.flycode-empty {
+  height: 100%;
+  min-height: 320px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--flycode-muted);
+  font-size: 13px;
+}
+
+.flycode-composer {
+  padding-top: 2px;
+}
+
+.flycode-pending-grid {
+  display: grid;
+  grid-template-columns: 230px 1fr;
+  gap: 12px;
+}
+
+.flycode-pending-item {
+  width: 100%;
+  text-align: left;
+  border: 1px solid #dfe7e2;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.flycode-pending-item.is-active {
+  border-color: var(--flycode-brand);
+  background: #eaf7ef;
+}
+
+.flycode-pending-item .sub {
+  margin-top: 3px;
+  font-size: 11px;
+  color: #617a6d;
+  word-break: break-all;
+}
+
+@media (max-width: 980px) {
+  .flycode-chat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .flycode-session-pane {
+    order: 2;
+    max-height: 260px;
+  }
+
+  .flycode-chat-main {
+    order: 1;
+  }
+
+  .flycode-pending-grid {
+    grid-template-columns: 1fr;
+  }
 }

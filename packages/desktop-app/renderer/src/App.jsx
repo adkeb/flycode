@@ -1,30 +1,46 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import {
-  Accordion,
-  AppShell,
-  Badge,
-  Box,
-  Button,
-  Card,
-  Group,
-  Loader,
-  MantineProvider,
-  Select,
-  SimpleGrid,
-  Stack,
-  Switch,
-  Text,
-  TextInput,
-  Title
-} from "@mantine/core";
-import { IconRefresh, IconShieldCheck, IconTerminal2 } from "@tabler/icons-react";
+import { ActionIcon, AppShell, Card, MantineProvider, Stack, Text, Tooltip } from "@mantine/core";
+import ChatWorkbenchPage from "./pages/ChatWorkbenchPage.jsx";
+import SettingsPage from "./pages/SettingsPage.jsx";
+import SidebarNav from "./components/SidebarNav.jsx";
+import TopStatusBar from "./components/TopStatusBar.jsx";
 
 const API_BASE = "http://127.0.0.1:39393";
 const MANAGED_SITES = ["qwen", "deepseek", "gemini"];
 const CONFIRMATION_REQUIRED_TOOLS = ["fs.write", "fs.writeBatch", "fs.rm", "fs.mv", "fs.chmod", "process.run", "shell.exec"];
+const LOCAL_SETTINGS_DRAFT_KEY = "flycode.desktop.settings-draft.v1";
+const LOCAL_LAYOUT_KEY = "flycode.desktop.layout.v1";
+const DEFAULT_ALLOWED_COMMANDS = ["npm", "node", "git", "rg", "pnpm", "yarn"];
+
+const DEFAULT_POLICY_RUNTIME = {
+  allowed_roots: [],
+  process: {
+    allowed_commands: [...DEFAULT_ALLOWED_COMMANDS],
+    allowed_cwds: []
+  }
+};
+
+const DEFAULT_APP_CONFIG = {
+  theme: "system",
+  logRetentionDays: 30,
+  servicePort: 39393,
+  alwaysAllow: {},
+  bridge: {
+    dedupeMaxEntries: 100000,
+    sessionReplayLimit: 500,
+    offlineQueuePerSession: 200,
+    toolInterceptDefault: "auto",
+    confirmationWaitTimeoutMs: 125000,
+    confirmationPollIntervalMs: 1200
+  }
+};
 
 export default function App() {
-  const [health, setHealth] = useState(null);
+  const localDraft = useMemo(() => readLocalSettingsDraft(), []);
+  const localLayout = useMemo(() => readLocalLayoutState(), []);
+
+  const [route, setRoute] = useState(readRouteFromHash());
+
   const [healthConnected, setHealthConnected] = useState(false);
   const [healthCheckedAt, setHealthCheckedAt] = useState("");
   const [healthError, setHealthError] = useState("");
@@ -32,35 +48,60 @@ export default function App() {
   const [confirmations, setConfirmations] = useState([]);
   const [siteKeys, setSiteKeys] = useState(null);
   const [events, setEvents] = useState([]);
-  const [policyRuntime, setPolicyRuntime] = useState({
-    allowed_roots: [],
-    process: {
-      allowed_commands: [],
-      allowed_cwds: []
-    }
-  });
+  const [policyRuntime, setPolicyRuntime] = useState(localDraft.policyRuntime ?? DEFAULT_POLICY_RUNTIME);
 
   const [rootInput, setRootInput] = useState("");
   const [commandInput, setCommandInput] = useState("");
   const [cwdInput, setCwdInput] = useState("");
 
   const [siteAdvancedOpen, setSiteAdvancedOpen] = useState({});
+  const [pendingCount, setPendingCount] = useState(0);
+  const [sidebarVisible, setSidebarVisible] = useState(localLayout.sidebarVisible === true);
+  const [topbarVisible, setTopbarVisible] = useState(localLayout.topbarVisible === true);
 
-  const [appConfig, setAppConfig] = useState({
-    theme: "system",
-    logRetentionDays: 30,
-    servicePort: 39393,
-    alwaysAllow: {}
-  });
+  const [appConfig, setAppConfig] = useState(localDraft.appConfig ?? DEFAULT_APP_CONFIG);
+
   const [filters, setFilters] = useState({
     site: "all",
     status: "all",
     tool: "",
     keyword: ""
   });
+
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
+
+  useEffect(() => {
+    const onHashChange = () => {
+      setRoute(readRouteFromHash());
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => {
+      window.removeEventListener("hashchange", onHashChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    writeLocalSettingsDraft({
+      appConfig,
+      policyRuntime
+    });
+  }, [appConfig, policyRuntime]);
+
+  useEffect(() => {
+    writeLocalLayoutState({
+      sidebarVisible,
+      topbarVisible
+    });
+  }, [sidebarVisible, topbarVisible]);
+
+  useEffect(() => {
+    if (route === "settings") {
+      setSidebarVisible(true);
+      setTopbarVisible(true);
+    }
+  }, [route]);
 
   const colorScheme = useMemo(() => {
     if (appConfig.theme === "light" || appConfig.theme === "dark") {
@@ -110,8 +151,7 @@ export default function App() {
 
   async function loadHealth() {
     try {
-      const value = await getJson("/v1/health");
-      setHealth(value);
+      await getJson("/v1/health");
       setHealthConnected(true);
       setHealthError("");
       setHealthCheckedAt(new Date().toISOString());
@@ -138,10 +178,7 @@ export default function App() {
     if (!value?.data) {
       return;
     }
-    setAppConfig((prev) => ({
-      ...prev,
-      ...value.data
-    }));
+    setAppConfig(normalizeAppConfigValue(value.data));
   }
 
   async function loadPolicyRuntime() {
@@ -150,13 +187,7 @@ export default function App() {
     if (!data || typeof data !== "object") {
       return;
     }
-    setPolicyRuntime({
-      allowed_roots: Array.isArray(data.allowed_roots) ? data.allowed_roots : [],
-      process: {
-        allowed_commands: Array.isArray(data.process?.allowed_commands) ? data.process.allowed_commands : [],
-        allowed_cwds: Array.isArray(data.process?.allowed_cwds) ? data.process.allowed_cwds : []
-      }
-    });
+    setPolicyRuntime(normalizePolicyRuntimeValue(data));
   }
 
   function buildConsoleSearch(filtersValue = filters) {
@@ -180,16 +211,18 @@ export default function App() {
       ...appConfig,
       ...patch
     });
-    setAppConfig(saved.data);
+    setAppConfig(normalizeAppConfigValue(saved.data));
     setNotice("配置已保存。");
+    setError("");
   }
 
-  async function validateAndSavePolicyRuntime() {
+  async function savePolicyRuntime(nextRuntime, options = { showNotice: true }) {
+    const runtime = normalizePolicyRuntimeValue(nextRuntime);
     const patch = {
-      allowed_roots: policyRuntime.allowed_roots,
+      allowed_roots: runtime.allowed_roots,
       process: {
-        allowed_commands: policyRuntime.process.allowed_commands,
-        allowed_cwds: policyRuntime.process.allowed_cwds
+        allowed_commands: runtime.process.allowed_commands,
+        allowed_cwds: runtime.process.allowed_cwds
       }
     };
 
@@ -198,12 +231,20 @@ export default function App() {
     if (!result?.ok) {
       const detail = (result?.errors ?? []).map((item) => `${item.field}: ${item.message}`).join("; ") || "校验失败";
       setError(detail);
-      return;
+      return false;
     }
 
-    await postJson("/v1/policy/runtime", patch);
-    setNotice("策略已热更新生效。");
-    await loadPolicyRuntime();
+    const saved = await postJson("/v1/policy/runtime", patch);
+    setPolicyRuntime(normalizePolicyRuntimeValue(saved?.data ?? runtime));
+    if (options.showNotice) {
+      setNotice("策略已保存并热更新生效。");
+    }
+    setError("");
+    return true;
+  }
+
+  async function validateAndSavePolicyRuntime() {
+    await savePolicyRuntime(policyRuntime);
   }
 
   async function rotateKey(siteId) {
@@ -217,7 +258,7 @@ export default function App() {
       ...appConfig,
       alwaysAllow: nextAlwaysAllow
     });
-    setAppConfig(saved.data);
+    setAppConfig(normalizeAppConfigValue(saved.data));
     setNotice(noticeText);
   }
 
@@ -263,18 +304,22 @@ export default function App() {
       setRootInput("");
       return;
     }
-    setPolicyRuntime((prev) => ({
-      ...prev,
-      allowed_roots: [...prev.allowed_roots, value]
-    }));
+    const next = normalizePolicyRuntimeValue({
+      ...policyRuntime,
+      allowed_roots: [...policyRuntime.allowed_roots, value]
+    });
+    setPolicyRuntime(next);
     setRootInput("");
+    void savePolicyRuntime(next, { showNotice: false });
   }
 
   function removePolicyRoot(target) {
-    setPolicyRuntime((prev) => ({
-      ...prev,
-      allowed_roots: prev.allowed_roots.filter((item) => item !== target)
-    }));
+    const next = normalizePolicyRuntimeValue({
+      ...policyRuntime,
+      allowed_roots: policyRuntime.allowed_roots.filter((item) => item !== target)
+    });
+    setPolicyRuntime(next);
+    void savePolicyRuntime(next, { showNotice: false });
   }
 
   function addAllowedCommand() {
@@ -284,24 +329,28 @@ export default function App() {
       setCommandInput("");
       return;
     }
-    setPolicyRuntime((prev) => ({
-      ...prev,
+    const next = normalizePolicyRuntimeValue({
+      ...policyRuntime,
       process: {
-        ...prev.process,
-        allowed_commands: [...prev.process.allowed_commands, value]
+        ...policyRuntime.process,
+        allowed_commands: [...policyRuntime.process.allowed_commands, value]
       }
-    }));
+    });
+    setPolicyRuntime(next);
     setCommandInput("");
+    void savePolicyRuntime(next, { showNotice: false });
   }
 
   function removeAllowedCommand(target) {
-    setPolicyRuntime((prev) => ({
-      ...prev,
+    const next = normalizePolicyRuntimeValue({
+      ...policyRuntime,
       process: {
-        ...prev.process,
-        allowed_commands: prev.process.allowed_commands.filter((item) => item !== target)
+        ...policyRuntime.process,
+        allowed_commands: policyRuntime.process.allowed_commands.filter((item) => item !== target)
       }
-    }));
+    });
+    setPolicyRuntime(next);
+    void savePolicyRuntime(next, { showNotice: false });
   }
 
   function addAllowedCwd() {
@@ -311,24 +360,28 @@ export default function App() {
       setCwdInput("");
       return;
     }
-    setPolicyRuntime((prev) => ({
-      ...prev,
+    const next = normalizePolicyRuntimeValue({
+      ...policyRuntime,
       process: {
-        ...prev.process,
-        allowed_cwds: [...prev.process.allowed_cwds, value]
+        ...policyRuntime.process,
+        allowed_cwds: [...policyRuntime.process.allowed_cwds, value]
       }
-    }));
+    });
+    setPolicyRuntime(next);
     setCwdInput("");
+    void savePolicyRuntime(next, { showNotice: false });
   }
 
   function removeAllowedCwd(target) {
-    setPolicyRuntime((prev) => ({
-      ...prev,
+    const next = normalizePolicyRuntimeValue({
+      ...policyRuntime,
       process: {
-        ...prev.process,
-        allowed_cwds: prev.process.allowed_cwds.filter((item) => item !== target)
+        ...policyRuntime.process,
+        allowed_cwds: policyRuntime.process.allowed_cwds.filter((item) => item !== target)
       }
-    }));
+    });
+    setPolicyRuntime(next);
+    void savePolicyRuntime(next, { showNotice: false });
   }
 
   async function exportConsoleEvents() {
@@ -369,455 +422,133 @@ export default function App() {
     await loadConsole();
   }
 
+  function navigate(nextRoute) {
+    const safe = nextRoute === "settings" ? "settings" : "chat";
+    const targetHash = `#/${safe}`;
+    if (window.location.hash !== targetHash) {
+      window.location.hash = targetHash;
+    }
+    setRoute(safe);
+  }
+
+  const immersiveChat = route === "chat";
+  const navbarOpened = !immersiveChat || sidebarVisible;
+  const headerOpened = !immersiveChat || topbarVisible;
+
   return (
     <MantineProvider defaultColorScheme="auto" forceColorScheme={colorScheme}>
-      <AppShell padding="md" header={{ height: 72 }}>
-        <AppShell.Header px="md">
-          <Group justify="space-between" h="100%">
-            <Group gap="sm">
-              <IconTerminal2 size={22} />
-              <div>
-                <Title order={3}>FlyCode Desktop</Title>
-                <Text size="sm" c="dimmed">
-                  MCP-only 控制台与确认中心
-                </Text>
-              </div>
-            </Group>
-            <Group>
-              <Select
-                value={appConfig.theme}
-                onChange={(value) => {
-                  const next = value ?? "system";
-                  setAppConfig((prev) => ({ ...prev, theme: next }));
-                  void saveConfig({ theme: next });
-                }}
-                data={[
-                  { value: "system", label: "跟随系统" },
-                  { value: "light", label: "浅色" },
-                  { value: "dark", label: "深色" }
-                ]}
-                w={120}
-              />
-              <Button leftSection={<IconRefresh size={14} />} onClick={() => void refreshAll()} loading={busy}>
-                刷新
-              </Button>
-            </Group>
-          </Group>
+      <AppShell
+        className={`flycode-shell ${immersiveChat ? "is-chat" : "is-settings"} ${navbarOpened ? "is-navbar-open" : "is-navbar-hidden"} ${headerOpened ? "is-header-open" : "is-header-hidden"}`}
+        padding={immersiveChat ? "xs" : "md"}
+        header={{ height: headerOpened ? 72 : 0 }}
+        navbar={{ width: navbarOpened ? 250 : 0, breakpoint: "sm" }}
+      >
+        <AppShell.Navbar>
+          <SidebarNav route={route} onNavigate={navigate} pendingCount={pendingCount} />
+        </AppShell.Navbar>
+
+        <AppShell.Header>
+          <TopStatusBar
+            healthConnected={healthConnected}
+            healthError={healthError}
+            healthCheckedAt={healthCheckedAt}
+            theme={appConfig.theme}
+            onChangeTheme={(nextTheme) => {
+              setAppConfig((prev) => ({ ...prev, theme: nextTheme }));
+              void saveConfig({ theme: nextTheme });
+            }}
+            onRefresh={() => void refreshAll()}
+            busy={busy}
+            route={route}
+          />
         </AppShell.Header>
 
         <AppShell.Main>
-          <Stack gap="md">
-            {(notice || error) && (
-              <Card withBorder>
-                {notice ? <Text c="green">{notice}</Text> : null}
-                {error ? <Text c="red">{error}</Text> : null}
-              </Card>
-            )}
+          {immersiveChat ? (
+            <div className="flycode-floating-controls">
+              <Tooltip label={sidebarVisible ? "隐藏侧边栏" : "显示侧边栏"} withArrow>
+                <ActionIcon
+                  variant="light"
+                  size="lg"
+                  onClick={() => setSidebarVisible((value) => !value)}
+                >
+                  ☰
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label={topbarVisible ? "隐藏顶栏" : "显示顶栏"} withArrow>
+                <ActionIcon
+                  variant="light"
+                  size="lg"
+                  onClick={() => setTopbarVisible((value) => !value)}
+                >
+                  ⌂
+                </ActionIcon>
+              </Tooltip>
+            </div>
+          ) : null}
 
-            <SimpleGrid cols={{ base: 1, md: 2 }}>
-              <Card withBorder>
-                <Group mb="xs">
-                  <IconShieldCheck size={16} />
-                  <Title order={4}>服务状态</Title>
-                </Group>
-                <Group justify="space-between" align="center">
-                  <Group gap="xs">
-                    <Badge color={healthConnected ? "green" : "red"} variant="filled">
-                      {healthConnected ? "正在工作" : "断开连接"}
-                    </Badge>
-                    {!healthConnected && healthError ? (
-                      <Text size="xs" c="red">
-                        {healthError}
-                      </Text>
-                    ) : null}
-                  </Group>
-                  <Text size="xs" c="dimmed">
-                    {healthCheckedAt ? `最近检查: ${new Date(healthCheckedAt).toLocaleString()}` : "未检查"}
-                  </Text>
-                </Group>
-              </Card>
-
-              <Card withBorder>
-                <Title order={4} mb="sm">
-                  配置中心
-                </Title>
-                <Stack gap="xs">
-                  <TextInput
-                    label="日志保留天数"
-                    type="number"
-                    min={1}
-                    max={365}
-                    value={String(appConfig.logRetentionDays ?? 30)}
-                    onChange={(event) =>
-                      setAppConfig((prev) => ({
-                        ...prev,
-                        logRetentionDays: clampNumber(event.currentTarget.value, 1, 365, 30)
-                      }))
-                    }
-                  />
-                  <TextInput
-                    label="服务端口"
-                    type="number"
-                    min={1024}
-                    max={65535}
-                    value={String(appConfig.servicePort ?? 39393)}
-                    onChange={(event) =>
-                      setAppConfig((prev) => ({
-                        ...prev,
-                        servicePort: clampNumber(event.currentTarget.value, 1024, 65535, 39393)
-                      }))
-                    }
-                  />
-                  <Group justify="flex-end">
-                    <Button
-                      size="xs"
-                      onClick={() =>
-                        void saveConfig({
-                          logRetentionDays: appConfig.logRetentionDays,
-                          servicePort: appConfig.servicePort
-                        })
-                      }
-                    >
-                      保存配置
-                    </Button>
-                  </Group>
-                </Stack>
-              </Card>
-            </SimpleGrid>
-
-            <Card withBorder>
-              <Title order={4} mb="sm">
-                策略管理
-              </Title>
-              <SimpleGrid cols={{ base: 1, md: 3 }}>
-                <Card withBorder p="sm">
-                  <Text fw={600} size="sm" mb="xs">
-                    允许目录 (allowed_roots)
-                  </Text>
-                  <Group mb="xs">
-                    <TextInput
-                      placeholder="输入绝对路径"
-                      value={rootInput}
-                      onChange={(event) => setRootInput(event.currentTarget.value)}
-                      style={{ flex: 1 }}
-                    />
-                    <Button size="xs" onClick={addPolicyRoot}>
-                      新增
-                    </Button>
-                  </Group>
-                  <Stack gap={4}>
-                    {policyRuntime.allowed_roots.map((item) => (
-                      <Group key={item} justify="space-between">
-                        <Text size="xs">{item}</Text>
-                        <Button size="compact-xs" color="red" variant="light" onClick={() => removePolicyRoot(item)}>
-                          删除
-                        </Button>
-                      </Group>
-                    ))}
-                  </Stack>
+          {route === "chat" ? (
+            <ChatWorkbenchPage
+              apiBase={API_BASE}
+              sessionReplayLimit={appConfig.bridge?.sessionReplayLimit ?? 500}
+              notice={notice}
+              error={error}
+              onPendingCountChange={setPendingCount}
+            />
+          ) : (
+            <Stack gap="md">
+              {(notice || error) && (
+                <Card withBorder>
+                  {notice ? <Text c="green">{notice}</Text> : null}
+                  {error ? <Text c="red">{error}</Text> : null}
                 </Card>
-
-                <Card withBorder p="sm">
-                  <Text fw={600} size="sm" mb="xs">
-                    命令白名单 (allowed_commands)
-                  </Text>
-                  <Group mb="xs">
-                    <TextInput
-                      placeholder="如 npm / node / git"
-                      value={commandInput}
-                      onChange={(event) => setCommandInput(event.currentTarget.value)}
-                      style={{ flex: 1 }}
-                    />
-                    <Button size="xs" onClick={addAllowedCommand}>
-                      新增
-                    </Button>
-                  </Group>
-                  <Stack gap={4}>
-                    {policyRuntime.process.allowed_commands.map((item) => (
-                      <Group key={item} justify="space-between">
-                        <Text size="xs">{item}</Text>
-                        <Button size="compact-xs" color="red" variant="light" onClick={() => removeAllowedCommand(item)}>
-                          删除
-                        </Button>
-                      </Group>
-                    ))}
-                  </Stack>
-                </Card>
-
-                <Card withBorder p="sm">
-                  <Text fw={600} size="sm" mb="xs">
-                    命令工作目录 (allowed_cwds)
-                  </Text>
-                  <Group mb="xs">
-                    <TextInput
-                      placeholder="输入绝对路径"
-                      value={cwdInput}
-                      onChange={(event) => setCwdInput(event.currentTarget.value)}
-                      style={{ flex: 1 }}
-                    />
-                    <Button size="xs" onClick={addAllowedCwd}>
-                      新增
-                    </Button>
-                  </Group>
-                  <Stack gap={4}>
-                    {policyRuntime.process.allowed_cwds.map((item) => (
-                      <Group key={item} justify="space-between">
-                        <Text size="xs">{item}</Text>
-                        <Button size="compact-xs" color="red" variant="light" onClick={() => removeAllowedCwd(item)}>
-                          删除
-                        </Button>
-                      </Group>
-                    ))}
-                  </Stack>
-                </Card>
-              </SimpleGrid>
-
-              <Group justify="flex-end" mt="sm">
-                <Button size="xs" onClick={() => void validateAndSavePolicyRuntime()}>
-                  保存并热更新
-                </Button>
-              </Group>
-            </Card>
-
-            <SimpleGrid cols={{ base: 1, md: 2 }}>
-              <Card withBorder>
-                <Title order={4} mb="sm">
-                  确认中心
-                </Title>
-                <Stack gap="xs">
-                  {confirmations.length === 0 ? (
-                    <Text size="sm" c="dimmed">
-                      当前无待处理确认。
-                    </Text>
-                  ) : (
-                    confirmations.map((item) => (
-                      <Card key={item.id} withBorder p="sm">
-                        <Group justify="space-between" mb={6}>
-                          <Text fw={600}>
-                            {item.tool} · {item.site}
-                          </Text>
-                          <Badge color={statusColor(item.status)}>{item.status}</Badge>
-                        </Group>
-                        <Text size="sm" c="dimmed">
-                          {item.summary}
-                        </Text>
-                        <Text size="xs" c="dimmed" mt={4}>
-                          {new Date(item.createdAt).toLocaleString()}
-                        </Text>
-                        {item.status === "pending" ? (
-                          <Group mt="xs">
-                            <Button size="xs" color="green" onClick={() => void decide(item.id, true, false)}>
-                              Approve
-                            </Button>
-                            <Button size="xs" color="blue" onClick={() => void decide(item.id, true, true)}>
-                              Always Allow
-                            </Button>
-                            <Button size="xs" color="red" variant="light" onClick={() => void decide(item.id, false, false)}>
-                              Reject
-                            </Button>
-                          </Group>
-                        ) : null}
-                      </Card>
-                    ))
-                  )}
-                </Stack>
-              </Card>
-
-              <Card withBorder>
-                <Title order={4} mb="sm">
-                  站点管理
-                </Title>
-                <Stack gap="xs">
-                  {MANAGED_SITES.map((site) => {
-                    const row = siteKeys?.sites?.[site];
-                    const advancedOpen = siteAdvancedOpen[site] === true;
-                    return (
-                      <Card key={site} withBorder p="sm">
-                        <Group justify="space-between" mb={6}>
-                          <Text fw={600}>{site}</Text>
-                          <Button size="xs" variant="light" onClick={() => void rotateKey(site)}>
-                            轮换
-                          </Button>
-                        </Group>
-                        <Text size="xs" c="dimmed">
-                          key: {row?.key ?? "(empty)"}
-                        </Text>
-                        <Text size="xs" c="dimmed" mt={4}>
-                          rotated: {row?.rotatedAt ? new Date(row.rotatedAt).toLocaleString() : "-"}
-                        </Text>
-                        <Box mt="sm">
-                          <Switch
-                            size="xs"
-                            label="该站点全部高风险命令免确认"
-                            checked={siteAllAlwaysAllowEnabled(site)}
-                            onChange={(event) => void setSiteAllAlwaysAllow(site, event.currentTarget.checked)}
-                          />
-                        </Box>
-                        <Group mt="xs" justify="space-between">
-                          <Text size="xs" c="dimmed">
-                            高级设置
-                          </Text>
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            onClick={() =>
-                              setSiteAdvancedOpen((prev) => ({
-                                ...prev,
-                                [site]: !prev[site]
-                              }))
-                            }
-                          >
-                            {advancedOpen ? "收起" : "展开"}
-                          </Button>
-                        </Group>
-                        {advancedOpen ? (
-                          <Stack gap={6} mt="xs">
-                            {CONFIRMATION_REQUIRED_TOOLS.map((tool) => (
-                              <Switch
-                                key={`${site}:${tool}`}
-                                size="xs"
-                                label={`${tool} 免确认`}
-                                checked={toolAlwaysAllowEnabled(site, tool)}
-                                onChange={(event) => void setSiteToolAlwaysAllow(site, tool, event.currentTarget.checked)}
-                              />
-                            ))}
-                          </Stack>
-                        ) : null}
-                      </Card>
-                    );
-                  })}
-                </Stack>
-              </Card>
-            </SimpleGrid>
-
-            <Card withBorder>
-              <Title order={4} mb="sm">
-                请求控制台
-              </Title>
-              <SimpleGrid cols={{ base: 1, md: 4 }} mb="sm">
-                <Select
-                  label="站点"
-                  value={filters.site}
-                  onChange={(value) => setFilters((prev) => ({ ...prev, site: value ?? "all" }))}
-                  data={[
-                    { value: "all", label: "all" },
-                    { value: "qwen", label: "qwen" },
-                    { value: "deepseek", label: "deepseek" },
-                    { value: "gemini", label: "gemini" }
-                  ]}
-                />
-                <Select
-                  label="状态"
-                  value={filters.status}
-                  onChange={(value) => setFilters((prev) => ({ ...prev, status: value ?? "all" }))}
-                  data={[
-                    { value: "all", label: "all" },
-                    { value: "success", label: "success" },
-                    { value: "failed", label: "failed" },
-                    { value: "pending", label: "pending" }
-                  ]}
-                />
-                <TextInput
-                  label="工具"
-                  placeholder="fs.read"
-                  value={filters.tool}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, tool: event.currentTarget.value }))}
-                />
-                <TextInput
-                  label="关键字"
-                  placeholder="path/audit"
-                  value={filters.keyword}
-                  onChange={(event) => setFilters((prev) => ({ ...prev, keyword: event.currentTarget.value }))}
-                />
-              </SimpleGrid>
-              <Group justify="flex-end" mb="sm">
-                <Button size="xs" variant="light" onClick={() => void loadConsole()}>
-                  应用过滤
-                </Button>
-                <Button size="xs" variant="light" onClick={() => void exportConsoleEvents()}>
-                  导出当前筛选
-                </Button>
-                <Button size="xs" color="red" variant="light" onClick={() => void clearConsoleEvents()}>
-                  清空日志
-                </Button>
-              </Group>
-
-              {events.length === 0 ? (
-                <Text size="sm" c="dimmed">
-                  暂无记录。
-                </Text>
-              ) : (
-                <Accordion multiple>
-                  {events.map((event) => (
-                    <Accordion.Item key={event.id} value={event.id}>
-                      <Accordion.Control>
-                        <Group justify="space-between" wrap="nowrap">
-                          <Text size="sm" fw={600}>
-                            {event.method}
-                            {event.tool ? `:${event.tool}` : ""}
-                          </Text>
-                          <Group gap={8}>
-                            <Badge color={statusColor(event.status)} variant="light">
-                              {event.status}
-                            </Badge>
-                            <Badge color={ageColor(event.timestamp)} variant="light">
-                              {new Date(event.timestamp).toLocaleString()}
-                            </Badge>
-                            <Text size="xs" c="dimmed">
-                              {event.site} · {event.durationMs ?? "-"}ms
-                            </Text>
-                          </Group>
-                        </Group>
-                      </Accordion.Control>
-                      <Accordion.Panel>
-                        <Box>
-                          {event.status === "pending" && getPendingConfirmationIdFromEvent(event) ? (
-                            <Card withBorder p="sm" mb="sm">
-                              <Stack gap={8}>
-                                <Text size="sm" fw={600}>
-                                  待审批操作
-                                </Text>
-                                <Text size="xs" c="dimmed">
-                                  confirmationId: {getPendingConfirmationIdFromEvent(event)}
-                                </Text>
-                                <Group gap="xs">
-                                  <Button
-                                    size="xs"
-                                    color="green"
-                                    onClick={() => void decide(getPendingConfirmationIdFromEvent(event), true, false)}
-                                  >
-                                    Approve
-                                  </Button>
-                                  <Button
-                                    size="xs"
-                                    color="blue"
-                                    onClick={() => void decide(getPendingConfirmationIdFromEvent(event), true, true)}
-                                  >
-                                    Always Allow
-                                  </Button>
-                                  <Button
-                                    size="xs"
-                                    color="red"
-                                    variant="light"
-                                    onClick={() => void decide(getPendingConfirmationIdFromEvent(event), false, false)}
-                                  >
-                                    Reject
-                                  </Button>
-                                </Group>
-                              </Stack>
-                            </Card>
-                          ) : null}
-                          <pre style={{ margin: 0, overflowX: "auto", whiteSpace: "pre-wrap", fontSize: 12 }}>
-                            {JSON.stringify({ request: event.request, response: event.response }, null, 2)}
-                          </pre>
-                        </Box>
-                      </Accordion.Panel>
-                    </Accordion.Item>
-                  ))}
-                </Accordion>
               )}
-            </Card>
-          </Stack>
+
+              <SettingsPage
+                state={{
+                  appConfig,
+                  policyRuntime,
+                  rootInput,
+                  commandInput,
+                  cwdInput,
+                  confirmations,
+                  siteKeys,
+                  siteAdvancedOpen,
+                  filters,
+                  events
+                }}
+                actions={{
+                  setAppConfig,
+                  saveConfig,
+                  setRootInput,
+                  setCommandInput,
+                  setCwdInput,
+                  addPolicyRoot,
+                  removePolicyRoot,
+                  addAllowedCommand,
+                  removeAllowedCommand,
+                  addAllowedCwd,
+                  removeAllowedCwd,
+                  validateAndSavePolicyRuntime,
+                  decide,
+                  rotateKey,
+                  setSiteAdvancedOpen,
+                  siteAllAlwaysAllowEnabled,
+                  setSiteAllAlwaysAllow,
+                  toolAlwaysAllowEnabled,
+                  setSiteToolAlwaysAllow,
+                  setFilters,
+                  loadConsole,
+                  exportConsoleEvents,
+                  clearConsoleEvents
+                }}
+                constants={{
+                  MANAGED_SITES,
+                  CONFIRMATION_REQUIRED_TOOLS
+                }}
+              />
+            </Stack>
+          )}
         </AppShell.Main>
       </AppShell>
     </MantineProvider>
@@ -860,50 +591,109 @@ async function postJson(pathValue, body) {
   return payload;
 }
 
-function statusColor(status) {
-  if (status === "success" || status === "approved") return "green";
-  if (status === "pending") return "blue";
-  return "red";
+function readRouteFromHash() {
+  const raw = String(window.location.hash || "").replace(/^#\/?/, "").trim();
+  if (raw === "settings") {
+    return "settings";
+  }
+  return "chat";
 }
 
-function ageColor(timestamp) {
-  const ts = Date.parse(timestamp);
-  if (!Number.isFinite(ts)) {
-    return "gray";
+function normalizePolicyRuntimeValue(input) {
+  if (!input || typeof input !== "object") {
+    return DEFAULT_POLICY_RUNTIME;
   }
-  const age = Date.now() - ts;
-  if (age <= 5 * 60 * 1000) return "green";
-  if (age <= 24 * 60 * 60 * 1000) return "yellow";
-  return "red";
+  const allowedRoots = Array.isArray(input.allowed_roots) ? input.allowed_roots.map((item) => String(item)).filter(Boolean) : [];
+  const allowedCommands = Array.isArray(input.process?.allowed_commands)
+    ? input.process.allowed_commands.map((item) => String(item)).filter(Boolean)
+    : [];
+  const allowedCwds = Array.isArray(input.process?.allowed_cwds)
+    ? input.process.allowed_cwds.map((item) => String(item)).filter(Boolean)
+    : [];
+  return {
+    allowed_roots: allowedRoots,
+    process: {
+      allowed_commands: allowedCommands.length > 0 ? Array.from(new Set(allowedCommands)) : [...DEFAULT_ALLOWED_COMMANDS],
+      allowed_cwds: allowedCwds
+    }
+  };
 }
 
-function getPendingConfirmationIdFromEvent(event) {
-  if (!event || typeof event !== "object") {
-    return "";
+function normalizeAppConfigValue(input) {
+  if (!input || typeof input !== "object") {
+    return DEFAULT_APP_CONFIG;
   }
-  const response = event.response;
-  if (!response || typeof response !== "object") {
-    return "";
-  }
-  const result = response.result;
-  if (!result || typeof result !== "object") {
-    return "";
-  }
-  const meta = result.meta;
-  if (!meta || typeof meta !== "object") {
-    return "";
-  }
-  const id = meta.pendingConfirmationId;
-  return typeof id === "string" ? id : "";
+  const theme = input.theme === "light" || input.theme === "dark" || input.theme === "system" ? input.theme : "system";
+  const alwaysAllow = input.alwaysAllow && typeof input.alwaysAllow === "object" ? input.alwaysAllow : {};
+  const bridge = input.bridge && typeof input.bridge === "object" ? input.bridge : {};
+  return {
+    ...DEFAULT_APP_CONFIG,
+    ...input,
+    theme,
+    alwaysAllow,
+    bridge: {
+      ...DEFAULT_APP_CONFIG.bridge,
+      ...bridge
+    }
+  };
 }
 
-function clampNumber(input, min, max, fallback) {
-  const value = Number(input);
-  if (!Number.isFinite(value)) {
-    return fallback;
+function readLocalSettingsDraft() {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_SETTINGS_DRAFT_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      appConfig: normalizeAppConfigValue(parsed?.appConfig),
+      policyRuntime: normalizePolicyRuntimeValue(parsed?.policyRuntime)
+    };
+  } catch {
+    return {};
   }
-  const rounded = Math.floor(value);
-  if (rounded < min) return min;
-  if (rounded > max) return max;
-  return rounded;
+}
+
+function writeLocalSettingsDraft(payload) {
+  try {
+    window.localStorage.setItem(
+      LOCAL_SETTINGS_DRAFT_KEY,
+      JSON.stringify({
+        appConfig: normalizeAppConfigValue(payload?.appConfig),
+        policyRuntime: normalizePolicyRuntimeValue(payload?.policyRuntime)
+      })
+    );
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function readLocalLayoutState() {
+  try {
+    const raw = window.localStorage.getItem(LOCAL_LAYOUT_KEY);
+    if (!raw) {
+      return {};
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      sidebarVisible: parsed?.sidebarVisible === true,
+      topbarVisible: parsed?.topbarVisible === true
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalLayoutState(payload) {
+  try {
+    window.localStorage.setItem(
+      LOCAL_LAYOUT_KEY,
+      JSON.stringify({
+        sidebarVisible: payload?.sidebarVisible === true,
+        topbarVisible: payload?.topbarVisible === true
+      })
+    );
+  } catch {
+    // ignore storage failures
+  }
 }

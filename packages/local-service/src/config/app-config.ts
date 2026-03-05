@@ -25,7 +25,15 @@ export function defaultAppConfig(): AppConfigData {
     theme: "system",
     logRetentionDays: 30,
     servicePort: 39393,
-    alwaysAllow: {}
+    alwaysAllow: {},
+    bridge: {
+      dedupeMaxEntries: 100_000,
+      sessionReplayLimit: 500,
+      offlineQueuePerSession: 200,
+      toolInterceptDefault: "auto",
+      confirmationWaitTimeoutMs: 125_000,
+      confirmationPollIntervalMs: 1_200
+    }
   };
 }
 
@@ -93,12 +101,72 @@ export function normalizeAppConfig(input: unknown): AppConfigData {
     }
   }
 
+  const rawBridge = parsed.bridge;
+  const dedupeMaxEntries = clampInt(
+    rawBridge && typeof rawBridge === "object" ? (rawBridge as { dedupeMaxEntries?: unknown }).dedupeMaxEntries : undefined,
+    1_000,
+    1_000_000,
+    fallback.bridge.dedupeMaxEntries
+  );
+  const sessionReplayLimit = clampInt(
+    rawBridge && typeof rawBridge === "object" ? (rawBridge as { sessionReplayLimit?: unknown }).sessionReplayLimit : undefined,
+    20,
+    2_000,
+    fallback.bridge.sessionReplayLimit
+  );
+  const offlineQueuePerSession = clampInt(
+    rawBridge && typeof rawBridge === "object" ? (rawBridge as { offlineQueuePerSession?: unknown }).offlineQueuePerSession : undefined,
+    20,
+    1_000,
+    fallback.bridge.offlineQueuePerSession
+  );
+  const toolInterceptRaw =
+    rawBridge && typeof rawBridge === "object"
+      ? (rawBridge as { toolInterceptDefault?: unknown }).toolInterceptDefault
+      : undefined;
+  const toolInterceptDefault =
+    toolInterceptRaw === "manual" || toolInterceptRaw === "auto"
+      ? toolInterceptRaw
+      : fallback.bridge.toolInterceptDefault;
+  const confirmationWaitTimeoutMs = clampInt(
+    rawBridge && typeof rawBridge === "object"
+      ? (rawBridge as { confirmationWaitTimeoutMs?: unknown }).confirmationWaitTimeoutMs
+      : undefined,
+    5_000,
+    600_000,
+    fallback.bridge.confirmationWaitTimeoutMs
+  );
+  const confirmationPollIntervalMs = clampInt(
+    rawBridge && typeof rawBridge === "object"
+      ? (rawBridge as { confirmationPollIntervalMs?: unknown }).confirmationPollIntervalMs
+      : undefined,
+    200,
+    10_000,
+    fallback.bridge.confirmationPollIntervalMs
+  );
+
   return {
     theme,
     logRetentionDays,
     servicePort,
-    alwaysAllow
+    alwaysAllow,
+    bridge: {
+      dedupeMaxEntries,
+      sessionReplayLimit,
+      offlineQueuePerSession,
+      toolInterceptDefault,
+      confirmationWaitTimeoutMs,
+      confirmationPollIntervalMs
+    }
   };
+}
+
+function clampInt(input: unknown, min: number, max: number, fallback: number): number {
+  const raw = Number(input ?? fallback);
+  if (!Number.isFinite(raw)) {
+    return fallback;
+  }
+  return Math.max(min, Math.min(max, Math.floor(raw)));
 }
 
 export async function readJsonFile<T>(filePath: string, fallback: T): Promise<T> {
@@ -118,4 +186,3 @@ export async function writeJsonFile(filePath: string, value: unknown): Promise<v
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
 }
-

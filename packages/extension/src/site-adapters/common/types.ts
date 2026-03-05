@@ -13,6 +13,7 @@ export interface AssistantBlock {
   kind: AssistantBlockKind;
   text: string;
   source?: AssistantBlockSource;
+  meta?: Record<string, unknown>;
 }
 
 export interface SubmitOutcome {

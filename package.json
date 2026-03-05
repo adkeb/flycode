@@ -15,9 +15,11 @@
     "dist:desktop:linux": "npm run dist:linux -w @flycode/desktop-app",
     "build:extension": "npm run build -w @flycode/extension",
     "build:extension:windows": "npm run build:extension && npm run sync:extension:windows",
+    "build:extension:windows:watch": "npm run build:extension && npm run sync:extension:windows:watch",
     "dev:desktop": "npm run dev -w @flycode/desktop-app",
     "dev:service": "npm run dev -w @flycode/local-service",
     "sync:extension:windows": "bash ./scripts/sync-extension-to-windows.sh",
+    "sync:extension:windows:watch": "bash ./scripts/sync-extension-to-windows.sh --watch",
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present"
   },

@@ -1,9 +1,8 @@
 <!doctype html>
-<!-- FlyCode Note: V2 extension options page (minimal bridge settings). -->
 <html>
   <head>
     <meta charset="UTF-8" />
-    <title>FlyCode 扩展（V2）</title>
+    <title>FlyCode 扩展设置</title>
     <style>
       :root {
         --bg: #f7f8fb;
@@ -20,7 +19,7 @@
         color: var(--fg);
       }
       .wrap {
-        max-width: 860px;
+        max-width: 820px;
         margin: 28px auto;
         padding: 0 18px;
       }
@@ -81,65 +80,39 @@
         min-height: 22px;
         font-weight: 600;
       }
-      .grid {
-        display: grid;
-        grid-template-columns: 1fr 1fr;
-        gap: 12px;
-      }
-      @media (max-width: 760px) {
-        .grid {
-          grid-template-columns: 1fr;
-        }
-      }
     </style>
   </head>
   <body>
     <main class="wrap">
-      <h1>FlyCode 扩展设置（V2 / MCP-only）</h1>
+      <h1>FlyCode 扩展设置（消息采集模式）</h1>
 
       <section class="card">
-        <h2>应用连接</h2>
+        <h2>连接参数</h2>
         <div class="row">
           <label for="appBaseUrl">FlyCode Desktop 服务地址</label>
           <input id="appBaseUrl" type="text" placeholder="http://127.0.0.1:39393" />
         </div>
         <div class="row">
-          <label for="maxInjectTokens">注入预算（字符近似）</label>
-          <input id="maxInjectTokens" type="number" min="200" max="200000" />
+          <label for="bridgeFrontDedupeLimit">采集前置去重上限/会话</label>
+          <input id="bridgeFrontDedupeLimit" type="number" min="200" max="20000" />
+        </div>
+        <div class="row">
+          <label for="bridgeOutboundQueueLimit">断线待发队列上限</label>
+          <input id="bridgeOutboundQueueLimit" type="number" min="20" max="1000" />
+        </div>
+        <div class="row">
+          <label for="bridgePingIntervalMs">心跳间隔(ms)</label>
+          <input id="bridgePingIntervalMs" type="number" min="2000" max="120000" />
+        </div>
+        <div class="row">
+          <label><input id="debugLoggingEnabled" type="checkbox" /> 启用调试日志</label>
         </div>
         <div class="btns">
           <button class="primary" id="saveBtn">保存设置</button>
           <button id="checkBtn">检测应用连接</button>
-          <button id="syncKeyBtn">同步站点密钥</button>
-          <button id="reloadBtn">重载站点页面</button>
+          <button id="reloadBtn">重载 Qwen/DeepSeek 页面</button>
         </div>
-        <p class="hint">扩展不会再管理业务策略，只负责连接应用与网页注入。</p>
-      </section>
-
-      <section class="card">
-        <h2>自动模式</h2>
-        <div class="grid">
-          <label><input id="autoToolEnabled" type="checkbox" /> 启用自动工具模式</label>
-          <label><input id="autoToolAutoSend" type="checkbox" /> 自动发送 mcp-response</label>
-          <label><input id="compactResultDisplayEnabled" type="checkbox" /> 摘要显示 mcp-response</label>
-          <label><input id="debugLoggingEnabled" type="checkbox" /> 启用调试日志</label>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>站点密钥（只读）</h2>
-        <div class="row">
-          <label for="qwenKey">Qwen Key</label>
-          <input id="qwenKey" type="text" readonly />
-        </div>
-        <div class="row">
-          <label for="deepseekKey">DeepSeek Key</label>
-          <input id="deepseekKey" type="text" readonly />
-        </div>
-        <div class="row">
-          <label for="geminiKey">Gemini Key</label>
-          <input id="geminiKey" type="text" readonly />
-        </div>
+        <p class="hint">扩展只负责采集网页消息并回传应用，不再执行 MCP、站点密钥、自动工具、文件/目录注入功能。</p>
       </section>
 
       <section class="card">
@@ -149,4 +122,3 @@
     <script type="module" src="options.js"></script>
   </body>
 </html>
-
